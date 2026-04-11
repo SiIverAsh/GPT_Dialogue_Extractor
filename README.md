@@ -1,10 +1,22 @@
-# ChatGPT Exporter
+<div align="center">
 
-[中文](./README.md) | [English](./README.en.md)
+# GPT Dialogue Extractor
 
-一个用于导出 ChatGPT 当前会话的浏览器扩展。
+一个用于导出 ChatGPT 当前会话的浏览器扩展。  
+直接读取 `chatgpt.com` 页面中已经渲染完成的对话内容，并导出为本地文件。
 
-这个项目直接读取 `chatgpt.com` 页面里已经渲染好的对话内容，然后导出为本地文件，不依赖私有接口抓取。
+<p>
+  <a href="./README.md">
+    <img alt="中文" src="https://img.shields.io/badge/中文-当前阅读-111827?style=for-the-badge&labelColor=2563eb" />
+  </a>
+  <a href="./README.en.md">
+    <img alt="English" src="https://img.shields.io/badge/English-Read-111827?style=for-the-badge&labelColor=475569" />
+  </a>
+</p>
+
+</div>
+
+这个项目不依赖私有接口抓取，而是基于页面 DOM 做本地导出。
 
 当前仓库已经切换为：
 

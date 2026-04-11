@@ -1,10 +1,22 @@
-# ChatGPT Exporter
+<div align="center">
 
-[中文](./README.md) | [English](./README.en.md)
+# GPT Dialogue Extractor
 
-A browser extension for exporting the current ChatGPT conversation.
+A browser extension for exporting the current ChatGPT conversation.  
+It reads the rendered conversation directly from `chatgpt.com` and exports it to local files.
 
-This project reads the rendered conversation directly from the live `chatgpt.com` page and exports it to local files. It does not rely on private API scraping.
+<p>
+  <a href="./README.md">
+    <img alt="中文" src="https://img.shields.io/badge/中文-Read-111827?style=for-the-badge&labelColor=475569" />
+  </a>
+  <a href="./README.en.md">
+    <img alt="English" src="https://img.shields.io/badge/English-Current-111827?style=for-the-badge&labelColor=2563eb" />
+  </a>
+</p>
+
+</div>
+
+This project does not rely on private API scraping. It exports data locally from the live page DOM.
 
 The repository now uses:
 
