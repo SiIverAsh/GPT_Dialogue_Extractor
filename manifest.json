@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT Exporter MVP",
+  "version": "0.1.0",
+  "description": "Export the current ChatGPT conversation as JSON or Markdown from the live page DOM.",
+  "permissions": ["downloads"],
+  "background": {
+    "service_worker": "src/background/index.js"
+  },
+  "host_permissions": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
+      "js": ["src/content/index.js"],
+      "css": ["src/content/styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
