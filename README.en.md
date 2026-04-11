@@ -150,6 +150,19 @@ If you change the extension code, do these three steps:
 
 Otherwise the browser may still be running an older content script.
 
+## Distribution And Installation
+
+If you do not want to publish to the extension store yet, the recommended flow is:
+
+- GitHub Release
+- download a zip package
+- load the unpacked extension in developer mode
+
+Related docs:
+
+- User installation guide: [INSTALL.en.md](./docs/INSTALL.en.md)
+- Release distribution guide: [RELEASE_DISTRIBUTION.en.md](./docs/RELEASE_DISTRIBUTION.en.md)
+
 ## Current Limitations
 
 - Only the currently opened conversation can be exported

@@ -150,6 +150,19 @@ npm run build
 
 否则浏览器可能还在运行旧版 content script。
 
+## 分发与安装
+
+如果你不打算上扩展商店，而是直接发给别人使用，建议走：
+
+- GitHub Release
+- 下载 zip
+- 开发者模式加载已解压扩展
+
+相关文档：
+
+- 用户安装说明： [INSTALL.zh-CN.md](./docs/INSTALL.zh-CN.md)
+- 发布说明： [RELEASE_DISTRIBUTION.zh-CN.md](./docs/RELEASE_DISTRIBUTION.zh-CN.md)
+
 ## 当前限制
 
 - 只支持导出当前打开的单个会话
