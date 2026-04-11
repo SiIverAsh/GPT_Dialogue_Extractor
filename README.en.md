@@ -16,12 +16,6 @@ It reads the rendered conversation directly from `chatgpt.com` and exports it to
 
 </div>
 
-This project does not rely on private API scraping. It exports data locally from the live page DOM.
-
-The repository now uses:
-
-- `TypeScript` as the runtime source
-- generated `JavaScript` as the actual extension runtime files
 
 ## Main Features
 
