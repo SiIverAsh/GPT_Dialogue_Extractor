@@ -6,6 +6,11 @@ A browser extension for exporting the current ChatGPT conversation.
 
 This project reads the rendered conversation directly from the live `chatgpt.com` page and exports it to local files. It does not rely on private API scraping.
 
+The repository now uses:
+
+- `TypeScript` as the runtime source
+- generated `JavaScript` as the actual extension runtime files
+
 ## Main Features
 
 - Export the current conversation as `JSON`
@@ -117,12 +122,31 @@ Usage:
 - click a marker to jump to that message
 - the currently active user message is highlighted while scrolling
 
+## Development And Build
+
+The runtime source files are:
+
+- `src/content/index.ts`
+- `src/background/index.ts`
+
+The actual files loaded by the extension are still:
+
+- `src/content/index.js`
+- `src/background/index.js`
+
+If you change the TypeScript source, rebuild the runtime files first:
+
+```bash
+npm run build
+```
+
 ## Refresh During Development
 
-If you change the extension code, refresh both:
+If you change the extension code, do these three steps:
 
-1. the extension in the extensions page
-2. the ChatGPT tab itself
+1. run `npm run build`
+2. refresh the extension in the extensions page
+3. refresh the ChatGPT tab itself
 
 Otherwise the browser may still be running an older content script.
 

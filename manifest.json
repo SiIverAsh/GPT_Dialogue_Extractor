@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT Exporter MVP",
+  "name": "GPT Dialogue Extractor",
+  "short_name": "GPT Extractor",
   "version": "0.1.0",
-  "description": "Export the current ChatGPT conversation as JSON or Markdown from the live page DOM.",
+  "description": "Export the current ChatGPT conversation as JSON, Markdown, or PDF from the live page DOM.",
   "permissions": ["downloads"],
   "background": {
     "service_worker": "src/background/index.js"

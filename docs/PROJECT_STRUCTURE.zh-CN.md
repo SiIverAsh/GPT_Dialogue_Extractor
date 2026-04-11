@@ -28,7 +28,26 @@
 
 TypeScript 配置。
 
-当前项目真正运行的主逻辑是 `JavaScript`，但项目里保留了一部分 TypeScript 架构文件，所以这里仍然有 `tsconfig`。
+当前项目现在采用：
+
+- `TypeScript` 作为运行时代码源码
+- 编译生成的 `JavaScript` 作为扩展真正加载的文件
+
+所以这里既有开发用的 `tsconfig.json`，也有构建用的 `tsconfig.build.json`。
+
+### [tsconfig.build.json](../tsconfig.build.json)
+
+运行时代码构建配置。
+
+这个文件负责把：
+
+- `src/content/index.ts`
+- `src/background/index.ts`
+
+编译回扩展实际运行的：
+
+- `src/content/index.js`
+- `src/background/index.js`
 
 ### [README.md](../README.md)
 
@@ -81,9 +100,15 @@ ChatGPT 页面适配记录。
 
 ## 运行时主链路
 
+### [src/content/index.ts](../src/content/index.ts)
+
+运行时 content script 的 TypeScript 源码。
+
+这是当前项目真正应该维护的 content 主文件。
+
 ### [src/content/index.js](../src/content/index.js)
 
-这是当前项目最重要的文件。
+这是由 `src/content/index.ts` 生成的运行时文件。
 
 它负责几乎所有核心能力：
 
@@ -98,7 +123,7 @@ ChatGPT 页面适配记录。
 - 生成 JSON / Markdown / PDF
 - 请求后台触发下载
 
-如果只看一个文件来理解这个项目，就先看这个。
+如果你要改逻辑，优先改 `src/content/index.ts`，不要直接改生成后的 `src/content/index.js`。
 
 ### [src/content/styles.css](../src/content/styles.css)
 
@@ -106,9 +131,13 @@ content script 的补充样式。
 
 虽然 `index.js` 里已经有很多内联样式，但这个文件仍然负责一些基础样式定义。
 
+### [src/background/index.ts](../src/background/index.ts)
+
+后台 service worker 的 TypeScript 源码。
+
 ### [src/background/index.js](../src/background/index.js)
 
-后台 service worker。
+由 `src/background/index.ts` 生成的后台运行文件。
 
 职责很单一：
 
@@ -180,19 +209,21 @@ ChatGPT DOM selector 的说明与候选定义。
 如果只看“现在扩展运行起来时谁在真正起作用”，关系可以简化成：
 
 1. `manifest.json`
-2. `src/content/index.js`
-3. `src/content/styles.css`
-4. `src/background/index.js`
+2. `src/content/index.ts`
+3. `src/content/index.js`
+4. `src/content/styles.css`
+5. `src/background/index.ts`
+6. `src/background/index.js`
 
-也就是说，当前 MVP 的真实运行核心其实非常集中。
+也就是说，当前 MVP 的真实运行核心依然集中，只是现在多了一层 TypeScript 源码和生成产物的关系。
 
 ## 推荐阅读顺序
 
 如果你自己要继续维护这个项目，建议按这个顺序看：
 
 1. [manifest.json](../manifest.json)
-2. [src/content/index.js](../src/content/index.js)
-3. [src/background/index.js](../src/background/index.js)
+2. [src/content/index.ts](../src/content/index.ts)
+3. [src/background/index.ts](../src/background/index.ts)
 4. [docs/CHATGPT_ADAPTATION_NOTES.md](./CHATGPT_ADAPTATION_NOTES.md)
 5. [docs/ARCHITECTURE.md](./ARCHITECTURE.md)
 

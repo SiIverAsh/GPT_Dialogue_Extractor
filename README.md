@@ -6,6 +6,11 @@
 
 这个项目直接读取 `chatgpt.com` 页面里已经渲染好的对话内容，然后导出为本地文件，不依赖私有接口抓取。
 
+当前仓库已经切换为：
+
+- `TypeScript` 作为运行时代码源码
+- 生成后的 `JavaScript` 作为扩展实际加载文件
+
 ## 主要功能
 
 - 导出当前会话为 `JSON`
@@ -117,12 +122,31 @@
 - 点击刻度，会跳到对应用户消息位置
 - 当前阅读到的用户消息会高亮
 
+## 开发和构建
+
+运行时代码源码位于：
+
+- `src/content/index.ts`
+- `src/background/index.ts`
+
+扩展实际加载的文件仍然是：
+
+- `src/content/index.js`
+- `src/background/index.js`
+
+如果你修改了 TypeScript 源码，需要先重新生成运行文件：
+
+```bash
+npm run build
+```
+
 ## 开发时刷新方法
 
-如果你修改了扩展代码，需要做两步刷新：
+如果你修改了扩展代码，需要做三步：
 
-1. 在扩展管理页刷新扩展
-2. 回到 ChatGPT 页面刷新标签页
+1. 先运行 `npm run build`
+2. 在扩展管理页刷新扩展
+3. 回到 ChatGPT 页面刷新标签页
 
 否则浏览器可能还在运行旧版 content script。
 
