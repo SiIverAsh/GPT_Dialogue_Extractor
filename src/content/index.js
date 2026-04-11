@@ -40,7 +40,6 @@
     ].join(", ");
     const WRAPPER_ID = "cge-exporter-toolbar";
     const EXPORT_BUTTON_ID = "cge-exporter-button";
-    const TIMELINE_BUTTON_ID = "cge-timeline-button";
     const PORTAL_ID = "cge-exporter-portal";
     const PANEL_ID = "cge-exporter-panel";
     const BACKDROP_ID = "cge-exporter-backdrop";
@@ -63,7 +62,6 @@
     let latestConversation = null;
     let selectedMessageIds = new Set();
     let selectionLoaded = false;
-    let timelineFilter = "";
     let activeTimelineMessageId = "";
     let currentTimelineScroller = null;
     let timelineScrollFrame = 0;
@@ -177,7 +175,6 @@
             input.disabled = disabled;
         });
     }
-    function setTimelineStatus(_message, _tone) { }
     function updateSelectionSummary() {
         const summary = document.getElementById(SELECTION_SUMMARY_ID);
         if (!summary) {
@@ -251,7 +248,6 @@
         }
         const turn = document.querySelector(`section[data-testid="${message.turnId}"]`);
         if (!(turn instanceof HTMLElement)) {
-            setTimelineStatus("没有找到对应消息节点。", "error");
             return;
         }
         turn.scrollIntoView({
@@ -522,7 +518,6 @@
             return;
         }
         timelineInFlight = true;
-        setTimelineStatus("正在准备时间轴…", "muted");
         try {
             if (forceReload || !latestConversation) {
                 await ensureFullHistoryLoaded();
@@ -532,14 +527,11 @@
                 throw new Error("没有读取到可供定位的消息。");
             }
             renderTimelineList();
-            const userCount = latestConversation.messages.filter((message) => message.role === "user").length;
-            setTimelineStatus(`时间轴已加载，共 ${userCount} 条用户消息。`, "success");
             ensureTimelineTracking();
             refreshActiveTimelineMessage();
         }
         catch (error) {
-            const message = error instanceof Error ? error.message : "时间轴加载失败。";
-            setTimelineStatus(message, "error");
+            void error;
         }
         finally {
             timelineInFlight = false;
@@ -595,26 +587,6 @@
         }
         backdrop.hidden = true;
         backdrop.style.display = "none";
-    }
-    function toggleTimelinePanel() {
-        const panel = document.getElementById(TIMELINE_PANEL_ID);
-        if (!(panel instanceof HTMLElement)) {
-            return;
-        }
-        const willShow = panel.hidden;
-        panel.hidden = !willShow;
-        panel.style.display = willShow ? "flex" : "none";
-        if (willShow) {
-            void prepareTimeline(false);
-        }
-    }
-    function closeTimelinePanel() {
-        const panel = document.getElementById(TIMELINE_PANEL_ID);
-        if (!(panel instanceof HTMLElement)) {
-            return;
-        }
-        panel.hidden = true;
-        panel.style.display = "none";
     }
     function ensurePanel() {
         if (document.getElementById(PORTAL_ID)) {
@@ -850,7 +822,6 @@
         window.addEventListener("keydown", (event) => {
             if (event.key === "Escape") {
                 closePanel();
-                closeTimelinePanel();
             }
         });
         window.addEventListener("resize", () => {
@@ -1602,99 +1573,6 @@
         const pages = renderConversationPdfPages(conversation);
         const pdfBytes = buildPdfFromImages(pages);
         return `data:application/pdf;base64,${bytesToBase64(pdfBytes)}`;
-    }
-    function escapeHtml(value) {
-        return value
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-    }
-    function buildPrintableHtml(conversation) {
-        const sections = conversation.messages
-            .map((message) => {
-            const roleLabel = message.role === "user" ? "用户" : "助手";
-            const body = message.role === "assistant" ? message.markdown : message.text;
-            return [
-                '<section class="cge-print-message">',
-                `<div class="cge-print-role">${roleLabel}</div>`,
-                `<pre class="cge-print-body">${escapeHtml(body)}</pre>`,
-                "</section>",
-            ].join("");
-        })
-            .join("");
-        return `<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <title>${escapeHtml(conversation.metadata.title)}</title>
-    <style>
-      body {
-        margin: 0;
-        padding: 32px;
-        font-family: "Segoe UI", "PingFang SC", sans-serif;
-        color: #0f172a;
-        background: #ffffff;
-      }
-      h1 {
-        margin: 0;
-        font-size: 26px;
-      }
-      .cge-print-meta {
-        margin-top: 12px;
-        color: #475569;
-        font-size: 12px;
-        line-height: 1.6;
-      }
-      .cge-print-message {
-        margin-top: 22px;
-        border: 1px solid #e2e8f0;
-        border-radius: 16px;
-        padding: 16px;
-        break-inside: avoid;
-      }
-      .cge-print-role {
-        font-size: 12px;
-        font-weight: 700;
-        color: #2563eb;
-      }
-      .cge-print-body {
-        margin: 10px 0 0;
-        white-space: pre-wrap;
-        word-break: break-word;
-        font-family: "Cascadia Code", "Consolas", monospace;
-        font-size: 12px;
-        line-height: 1.65;
-      }
-      @media print {
-        body {
-          padding: 18mm 14mm;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <h1>${escapeHtml(conversation.metadata.title)}</h1>
-    <div class="cge-print-meta">
-      <div>Exported At: ${escapeHtml(conversation.metadata.exportedAt)}</div>
-      <div>Source: ${escapeHtml(conversation.metadata.url)}</div>
-      <div>Message Count: ${conversation.metadata.messageCount}</div>
-    </div>
-    ${sections}
-  </body>
-</html>`;
-    }
-    function printConversationPdf(conversation) {
-        const printWindow = window.open("", "_blank", "noopener,noreferrer");
-        if (!printWindow) {
-            throw new Error("无法打开打印窗口。请检查浏览器是否拦截了弹窗。");
-        }
-        printWindow.document.open();
-        printWindow.document.write(buildPrintableHtml(conversation));
-        printWindow.document.close();
-        printWindow.focus();
-        window.setTimeout(() => {
-            printWindow.print();
-        }, 250);
     }
     function requestBrowserDownloadUrl(filename, url) {
         const runtime = typeof chrome !== "undefined" ? chrome.runtime : null;
