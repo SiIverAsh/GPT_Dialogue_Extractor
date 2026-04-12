@@ -45,6 +45,8 @@
     const BACKDROP_ID = "cge-exporter-backdrop";
     const TIMELINE_PANEL_ID = "cge-timeline-panel";
     const TIMELINE_LIST_ID = "cge-timeline-list";
+    const TIMELINE_DIRECTORY_ID = "cge-timeline-directory";
+    const TIMELINE_TOGGLE_ID = "cge-timeline-toggle";
     const TIMELINE_TOOLTIP_ID = "cge-timeline-tooltip";
     const STATUS_ID = "cge-exporter-status";
     const SCOPE_ID = "cge-exporter-scope";
@@ -55,6 +57,14 @@
     const MESSAGE_LIST_ID = "cge-message-list";
     const MAX_HISTORY_ITERATIONS = 80;
     const STABLE_HISTORY_ROUNDS = 3;
+    const TIMELINE_SCROLL_PADDING = 12;
+    const TIMELINE_MIN_TOP_CLEARANCE = 96;
+    const TIMELINE_ACTIVE_LOCK_MS = 1200;
+    const TIMELINE_CONDENSE_THRESHOLD = 16;
+    const TIMELINE_MIN_MARKER_GAP = 8;
+    const TIMELINE_MIN_MARKERS = 16;
+    const TIMELINE_MAX_MARKERS = 16;
+    const TIMELINE_FOCUS_WINDOW = 9;
     let injectTimer = 0;
     let exportInFlight = false;
     let selectionInFlight = false;
@@ -68,6 +78,9 @@
     let timelineRefreshTimer = 0;
     let lastSelectionSignature = "";
     let lastTimelineSignature = "";
+    let timelineLockedMessageId = "";
+    let timelineLockedUntil = 0;
+    let timelineDirectoryExpanded = false;
     function delay(ms) {
         return new Promise((resolve) => {
             window.setTimeout(resolve, ms);
@@ -245,19 +258,142 @@
         const userMessages = latestConversation.messages.filter((message) => message.role === "user");
         return userMessages;
     }
-    function scrollToMessage(message) {
+    function getTimelineMarkerCapacity(listHeight) {
+        if (listHeight <= 0) {
+            return TIMELINE_CONDENSE_THRESHOLD;
+        }
+        const usableHeight = Math.max(listHeight - 20, 24);
+        return Math.max(TIMELINE_MIN_MARKERS, Math.min(TIMELINE_MAX_MARKERS, Math.floor(usableHeight / TIMELINE_MIN_MARKER_GAP)));
+    }
+    function isTimelineCondensed(messages, listHeight) {
+        return messages.length > Math.min(TIMELINE_CONDENSE_THRESHOLD, getTimelineMarkerCapacity(listHeight));
+    }
+    function buildTimelineRenderMessages(messages, listHeight) {
+        const maxMarkers = getTimelineMarkerCapacity(listHeight);
+        if (messages.length <= TIMELINE_CONDENSE_THRESHOLD) {
+            return messages;
+        }
+        const messageIndexById = new Map(messages.map((message, index) => [message.id, index]));
+        const selectedIndices = new Set([0, messages.length - 1]);
+        const focusIds = [timelineLockedMessageId, activeTimelineMessageId].filter(Boolean);
+        focusIds.forEach((messageId) => {
+            const index = messageIndexById.get(messageId);
+            if (typeof index !== "number") {
+                return;
+            }
+            const halfWindow = Math.floor(TIMELINE_FOCUS_WINDOW / 2);
+            const start = Math.max(0, index - halfWindow);
+            const end = Math.min(messages.length - 1, index + halfWindow);
+            for (let current = start; current <= end; current += 1) {
+                selectedIndices.add(current);
+            }
+        });
+        const remainingSlots = Math.max(maxMarkers - selectedIndices.size, 0);
+        if (remainingSlots > 0) {
+            const sampleCount = Math.min(messages.length, remainingSlots);
+            const denominator = Math.max(sampleCount - 1, 1);
+            for (let step = 0; step < sampleCount; step += 1) {
+                const ratio = sampleCount === 1 ? 0.5 : step / denominator;
+                selectedIndices.add(Math.round(ratio * (messages.length - 1)));
+            }
+        }
+        return Array.from(selectedIndices)
+            .sort((left, right) => left - right)
+            .slice(0, maxMarkers)
+            .map((index) => messages[index]);
+    }
+    function scrollElementToTop(target, scrollContainer, offset = 0) {
+        const containerTop = scrollContainer === document.scrollingElement ? 0 : scrollContainer.getBoundingClientRect().top;
+        const targetTop = target.getBoundingClientRect().top;
+        const nextTop = scrollContainer.scrollTop + targetTop - containerTop - offset;
+        scrollContainer.scrollTo({
+            top: Math.max(0, nextTop),
+            behavior: "smooth",
+        });
+    }
+    function resolveTimelineTurn(message) {
         if (!message || typeof message.turnId !== "string") {
-            return;
+            return null;
         }
         const turn = document.querySelector(`section[data-testid="${message.turnId}"]`);
         if (!(turn instanceof HTMLElement)) {
+            return null;
+        }
+        return turn;
+    }
+    function resolveTimelineTargetElement(message) {
+        const turn = resolveTimelineTurn(message);
+        if (!(turn instanceof HTMLElement)) {
+            return null;
+        }
+        const userBody = resolveUserBody(turn);
+        return userBody instanceof HTMLElement ? userBody : turn;
+    }
+    function resolveTimelineTopOffset(scrollContainer, target) {
+        const containerTop = scrollContainer === document.scrollingElement ? 0 : scrollContainer.getBoundingClientRect().top;
+        const targetRect = target.getBoundingClientRect();
+        const probeX = Math.max(8, Math.min(window.innerWidth - 8, Math.round(targetRect.left + Math.min(targetRect.width / 2, 24))));
+        const probeY = Math.max(0, Math.min(window.innerHeight - 1, Math.round(containerTop + 8)));
+        const elements = document.elementsFromPoint(probeX, probeY);
+        let obstructionBottom = containerTop;
+        elements.forEach((element) => {
+            if (!(element instanceof HTMLElement) || element === target || target.contains(element)) {
+                return;
+            }
+            const style = window.getComputedStyle(element);
+            if (style.position !== "fixed" && style.position !== "sticky") {
+                return;
+            }
+            if (scrollContainer !== document.scrollingElement &&
+                style.position === "sticky" &&
+                !scrollContainer.contains(element)) {
+                return;
+            }
+            const rect = element.getBoundingClientRect();
+            if (rect.height > window.innerHeight * 0.5 || rect.bottom <= containerTop || rect.top > probeY) {
+                return;
+            }
+            obstructionBottom = Math.max(obstructionBottom, rect.bottom);
+        });
+        return Math.max(TIMELINE_MIN_TOP_CLEARANCE, obstructionBottom - containerTop + TIMELINE_SCROLL_PADDING);
+    }
+    function correctTimelineTargetVisibility(scrollContainer, target) {
+        const containerTop = scrollContainer === document.scrollingElement ? 0 : scrollContainer.getBoundingClientRect().top;
+        const safeTop = containerTop + resolveTimelineTopOffset(scrollContainer, target);
+        const currentTop = target.getBoundingClientRect().top;
+        const delta = currentTop - safeTop;
+        if (delta >= 0) {
             return;
         }
-        turn.scrollIntoView({
-            block: "center",
-            behavior: "smooth",
+        scrollContainer.scrollTo({
+            top: Math.max(0, scrollContainer.scrollTop + delta - TIMELINE_SCROLL_PADDING),
+            behavior: "auto",
         });
+    }
+    function scrollToMessage(message) {
+        const target = resolveTimelineTargetElement(message);
+        const turn = resolveTimelineTurn(message);
+        if (!(target instanceof HTMLElement) || !(turn instanceof HTMLElement)) {
+            return;
+        }
+        const scrollContainer = resolveScrollContainer();
+        if (scrollContainer) {
+            scrollElementToTop(target, scrollContainer, resolveTimelineTopOffset(scrollContainer, target));
+            [180, 420, 760].forEach((delayMs) => {
+                window.setTimeout(() => {
+                    correctTimelineTargetVisibility(scrollContainer, target);
+                }, delayMs);
+            });
+        }
+        else {
+            target.scrollIntoView({
+                block: "start",
+                behavior: "smooth",
+            });
+        }
         activeTimelineMessageId = message.id;
+        timelineLockedMessageId = message.id;
+        timelineLockedUntil = Date.now() + TIMELINE_ACTIVE_LOCK_MS;
         updateTimelineActiveStyles();
         const previousTransition = turn.style.transition;
         const previousBoxShadow = turn.style.boxShadow;
@@ -284,6 +420,116 @@
             item.style.transform = isActive ? "translate(-50%, -50%) scaleY(1.12)" : "translate(-50%, -50%)";
             item.style.opacity = isActive ? "1" : "0.78";
         });
+        updateTimelineDirectoryActiveStyles();
+    }
+    function updateTimelineDirectoryActiveStyles() {
+        const directory = document.getElementById(TIMELINE_DIRECTORY_ID);
+        if (!(directory instanceof HTMLElement)) {
+            return;
+        }
+        const rows = directory.querySelectorAll("button[data-message-id]");
+        let activeRow = null;
+        rows.forEach((row) => {
+            const isActive = row.getAttribute("data-message-id") === activeTimelineMessageId;
+            row.classList.toggle("is-active", isActive);
+            if (isActive) {
+                activeRow = row;
+            }
+        });
+        if (timelineDirectoryExpanded && activeRow instanceof HTMLElement) {
+            activeRow.scrollIntoView({
+                block: "nearest",
+                behavior: "auto",
+            });
+        }
+    }
+    function updateTimelinePanelState() {
+        const panel = document.getElementById(TIMELINE_PANEL_ID);
+        const directory = document.getElementById(TIMELINE_DIRECTORY_ID);
+        const toggle = document.getElementById(TIMELINE_TOGGLE_ID);
+        if (!(panel instanceof HTMLElement) || !(directory instanceof HTMLElement) || !(toggle instanceof HTMLButtonElement)) {
+            return;
+        }
+        panel.dataset.expanded = timelineDirectoryExpanded ? "true" : "false";
+        panel.style.width = timelineDirectoryExpanded ? "320px" : "24px";
+        panel.style.borderRadius = timelineDirectoryExpanded ? "20px" : "999px";
+        panel.style.padding = timelineDirectoryExpanded ? "10px" : "10px 0";
+        panel.style.overflow = timelineDirectoryExpanded ? "hidden" : "visible";
+        panel.style.background = timelineDirectoryExpanded ? "rgba(15, 23, 42, 0.84)" : "rgba(15, 23, 42, 0.18)";
+        panel.style.borderColor = timelineDirectoryExpanded
+            ? "rgba(148, 163, 184, 0.28)"
+            : "rgba(71, 85, 105, 0.18)";
+        panel.style.boxShadow = timelineDirectoryExpanded
+            ? "0 18px 42px rgba(2, 6, 23, 0.32)"
+            : "0 12px 30px rgba(2, 6, 23, 0.12)";
+        directory.hidden = !timelineDirectoryExpanded;
+        directory.style.display = timelineDirectoryExpanded ? "block" : "none";
+        toggle.textContent = timelineDirectoryExpanded ? "<<" : ">>";
+        toggle.title = timelineDirectoryExpanded ? "收起消息目录" : "展开消息目录";
+        toggle.setAttribute("aria-label", toggle.title);
+        toggle.style.right = timelineDirectoryExpanded ? "8px" : "30px";
+    }
+    function toggleTimelineDirectory() {
+        timelineDirectoryExpanded = !timelineDirectoryExpanded;
+        updateTimelinePanelState();
+        if (timelineDirectoryExpanded) {
+            renderTimelineDirectory();
+            updateTimelineDirectoryActiveStyles();
+        }
+    }
+    function collapseTimelineDirectory() {
+        if (!timelineDirectoryExpanded) {
+            return;
+        }
+        timelineDirectoryExpanded = false;
+        updateTimelinePanelState();
+    }
+    function handleTimelineOutsidePointerDown(event) {
+        if (!timelineDirectoryExpanded) {
+            return;
+        }
+        const panel = document.getElementById(TIMELINE_PANEL_ID);
+        if (!(panel instanceof HTMLElement)) {
+            return;
+        }
+        const target = event.target;
+        if (target instanceof Node && panel.contains(target)) {
+            return;
+        }
+        collapseTimelineDirectory();
+    }
+    function renderTimelineDirectory() {
+        const directory = document.getElementById(TIMELINE_DIRECTORY_ID);
+        if (!(directory instanceof HTMLElement)) {
+            return;
+        }
+        directory.innerHTML = "";
+        const messages = getTimelineMessages();
+        if (!messages.length) {
+            const empty = document.createElement("div");
+            empty.className = "cge-timeline-directory-empty";
+            empty.textContent = "还没有可定位的用户消息。";
+            directory.append(empty);
+            return;
+        }
+        messages.forEach((message) => {
+            const row = document.createElement("button");
+            row.type = "button";
+            row.className = "cge-timeline-directory-row";
+            row.dataset.messageId = message.id;
+            const title = document.createElement("div");
+            title.className = "cge-timeline-directory-title";
+            title.textContent = `用户 ${message.index}`;
+            const preview = document.createElement("div");
+            preview.className = "cge-timeline-directory-preview";
+            preview.textContent = message.text.slice(0, 120) || "(空消息)";
+            row.append(title, preview);
+            row.addEventListener("click", () => {
+                scrollToMessage(message);
+            });
+            directory.append(row);
+        });
+        updateTimelineDirectoryActiveStyles();
     }
     function showTimelineTooltip(message, target) {
         const tooltip = document.getElementById(TIMELINE_TOOLTIP_ID);
@@ -323,34 +569,47 @@
             ? currentTimelineScroller.getBoundingClientRect()
             : null;
         const viewportTop = scrollerRect ? scrollerRect.top : 0;
-        const switchLine = viewportTop + 4;
-        let bestReached = null;
-        let bestUpcoming = null;
-        userMessages.forEach((message) => {
-            const turn = document.querySelector(`section[data-testid="${message.turnId}"]`);
-            if (!(turn instanceof HTMLElement)) {
-                return;
-            }
-            const rect = turn.getBoundingClientRect();
-            if (rect.top <= switchLine) {
-                if (!bestReached || rect.top > bestReached.top) {
-                    bestReached = {
-                        id: message.id,
-                        top: rect.top,
-                    };
+        const referenceLine = viewportTop + TIMELINE_MIN_TOP_CLEARANCE;
+        if (timelineLockedMessageId && Date.now() < timelineLockedUntil) {
+            const lockedTarget = resolveTimelineTargetElement(userMessages.find((message) => message.id === timelineLockedMessageId));
+            if (lockedTarget instanceof HTMLElement) {
+                const nextActiveId = timelineLockedMessageId;
+                if (nextActiveId !== activeTimelineMessageId) {
+                    activeTimelineMessageId = nextActiveId;
+                    updateTimelineActiveStyles();
                 }
                 return;
             }
-            if (!bestUpcoming || rect.top < bestUpcoming.top) {
-                bestUpcoming = {
+        }
+        else {
+            timelineLockedMessageId = "";
+            timelineLockedUntil = 0;
+        }
+        let bestCandidate = null;
+        userMessages.forEach((message) => {
+            const target = resolveTimelineTargetElement(message);
+            if (!(target instanceof HTMLElement)) {
+                return;
+            }
+            const rect = target.getBoundingClientRect();
+            const distance = Math.abs(rect.top - referenceLine);
+            if (!bestCandidate ||
+                distance < bestCandidate.distance ||
+                (distance === bestCandidate.distance && rect.top > bestCandidate.top)) {
+                bestCandidate = {
                     id: message.id,
                     top: rect.top,
+                    distance,
                 };
             }
         });
-        const nextActiveId = (bestReached || bestUpcoming || {}).id || "";
+        const nextActiveId = (bestCandidate || {}).id || "";
         if (nextActiveId && nextActiveId !== activeTimelineMessageId) {
             activeTimelineMessageId = nextActiveId;
+            const list = document.getElementById(TIMELINE_LIST_ID);
+            if (list instanceof HTMLElement && isTimelineCondensed(userMessages, list.clientHeight || 0)) {
+                renderTimelineList();
+            }
             updateTimelineActiveStyles();
         }
     }
@@ -385,6 +644,7 @@
         }
         list.innerHTML = "";
         const messages = getTimelineMessages();
+        const renderMessages = buildTimelineRenderMessages(messages, list.clientHeight || 0);
         if (!messages.length) {
             const empty = document.createElement("div");
             empty.style.position = "absolute";
@@ -396,6 +656,7 @@
             empty.style.borderRadius = "999px";
             empty.style.background = "linear-gradient(180deg, rgba(71, 85, 105, 0.1), rgba(71, 85, 105, 0.36), rgba(71, 85, 105, 0.1))";
             list.append(empty);
+            renderTimelineDirectory();
             return;
         }
         const track = document.createElement("div");
@@ -410,8 +671,10 @@
         list.append(track);
         const denominator = Math.max(messages.length - 1, 1);
         const usableHeight = Math.max(list.clientHeight - 20, 24);
-        messages.forEach((message, index) => {
-            const ratio = messages.length === 1 ? 0.5 : index / denominator;
+        const isCondensed = renderMessages.length < messages.length;
+        renderMessages.forEach((message) => {
+            const messageIndex = messages.findIndex((item) => item.id === message.id);
+            const ratio = messages.length === 1 ? 0.5 : Math.max(0, messageIndex) / denominator;
             const item = document.createElement("button");
             item.type = "button";
             item.dataset.messageId = message.id;
@@ -419,8 +682,8 @@
             item.style.position = "absolute";
             item.style.left = "50%";
             item.style.top = `${10 + usableHeight * ratio}px`;
-            item.style.width = "12px";
-            item.style.height = "20px";
+            item.style.width = isCondensed ? "10px" : "12px";
+            item.style.height = isCondensed ? "14px" : "20px";
             item.style.transform = "translate(-50%, -50%)";
             item.style.border = "1px solid rgba(100, 116, 139, 0.36)";
             item.style.borderRadius = "999px";
@@ -453,6 +716,7 @@
             });
             list.append(item);
         });
+        renderTimelineDirectory();
         updateTimelineActiveStyles();
     }
     async function prepareSelection(forceReload) {
@@ -760,7 +1024,9 @@
         panel.style.right = "12px";
         panel.style.bottom = "92px";
         panel.style.width = "24px";
-        panel.style.display = "block";
+        panel.style.display = "flex";
+        panel.style.alignItems = "stretch";
+        panel.style.gap = "10px";
         panel.style.borderRadius = "999px";
         panel.style.background = "rgba(2, 6, 23, 0.08)";
         panel.style.backdropFilter = "blur(10px)";
@@ -768,13 +1034,26 @@
         panel.style.boxShadow = "0 12px 30px rgba(2, 6, 23, 0.12)";
         panel.style.padding = "10px 0";
         panel.style.pointerEvents = "auto";
+        panel.style.transition = "width 180ms ease, border-radius 180ms ease, padding 180ms ease";
         const list = document.createElement("div");
         list.id = TIMELINE_LIST_ID;
         list.style.position = "relative";
-        list.style.width = "100%";
+        list.style.flex = "0 0 24px";
+        list.style.width = "24px";
         list.style.height = "100%";
         list.style.padding = "0";
         list.style.overflow = "hidden";
+        const directory = document.createElement("div");
+        directory.id = TIMELINE_DIRECTORY_ID;
+        directory.className = "cge-timeline-directory";
+        directory.hidden = true;
+        const toggle = document.createElement("button");
+        toggle.id = TIMELINE_TOGGLE_ID;
+        toggle.type = "button";
+        toggle.className = "cge-timeline-toggle";
+        toggle.addEventListener("click", () => {
+            toggleTimelineDirectory();
+        });
         const tooltip = document.createElement("div");
         tooltip.id = TIMELINE_TOOLTIP_ID;
         tooltip.style.position = "fixed";
@@ -793,8 +1072,10 @@
         tooltip.style.transform = "translateY(4px)";
         tooltip.style.transition = "opacity 120ms ease, transform 120ms ease";
         panel.title = "用户消息时间轴";
-        panel.append(list);
+        panel.append(directory, list, toggle);
         portal.append(panel, tooltip);
+        document.addEventListener("pointerdown", handleTimelineOutsidePointerDown, true);
+        updateTimelinePanelState();
     }
     function scheduleToolbarInjection() {
         if (injectTimer) {
