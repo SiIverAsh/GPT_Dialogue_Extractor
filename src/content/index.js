@@ -102,15 +102,6 @@
         button.className = "cge-panel-button";
         button.dataset.format = format;
         button.textContent = label;
-        button.style.flex = "1 1 0";
-        button.style.border = "0";
-        button.style.borderRadius = "12px";
-        button.style.background = "#111111";
-        button.style.color = "#ffffff";
-        button.style.padding = "10px 12px";
-        button.style.fontSize = "12px";
-        button.style.fontWeight = "600";
-        button.style.cursor = "pointer";
         button.addEventListener("click", () => {
             void runExport(format);
         });
@@ -120,16 +111,12 @@
         const button = document.createElement("button");
         button.type = "button";
         button.id = id;
+        button.className = "cge-panel-utility-button";
         button.textContent = label;
-        button.style.border = "1px solid rgba(148, 163, 184, 0.4)";
-        button.style.borderRadius = "10px";
-        button.style.background = "#ffffff";
-        button.style.color = "#0f172a";
-        button.style.padding = "8px 10px";
-        button.style.fontSize = "12px";
-        button.style.fontWeight = "600";
-        button.style.cursor = "pointer";
         return button;
+    }
+    function updateSelectionRowState(row, checkbox) {
+        row.classList.toggle("is-selected", checkbox.checked);
     }
     function setStatus(message, tone) {
         const status = document.getElementById(STATUS_ID);
@@ -195,18 +182,15 @@
         list.innerHTML = "";
         conversation.messages.forEach((message, index) => {
             const row = document.createElement("label");
-            row.style.display = "grid";
-            row.style.gridTemplateColumns = "16px 1fr";
-            row.style.gap = "10px";
-            row.style.alignItems = "start";
-            row.style.padding = "10px 0";
-            row.style.borderTop = index === 0 ? "0" : "1px solid rgba(148, 163, 184, 0.16)";
-            row.style.cursor = "pointer";
+            row.className = "cge-message-row";
+            if (index === 0) {
+                row.style.borderTop = "0";
+            }
             const checkbox = document.createElement("input");
             checkbox.type = "checkbox";
+            checkbox.className = "cge-message-checkbox";
             checkbox.checked = selectedMessageIds.has(message.id);
             checkbox.dataset.messageId = message.id;
-            checkbox.style.marginTop = "3px";
             checkbox.addEventListener("change", () => {
                 if (checkbox.checked) {
                     selectedMessageIds.add(message.id);
@@ -214,23 +198,24 @@
                 else {
                     selectedMessageIds.delete(message.id);
                 }
+                updateSelectionRowState(row, checkbox);
                 updateSelectionSummary();
             });
+            const check = document.createElement("span");
+            check.className = "cge-message-check";
+            const indicator = document.createElement("span");
+            indicator.className = "cge-message-check-indicator";
+            check.append(checkbox, indicator);
             const content = document.createElement("div");
             const title = document.createElement("div");
+            title.className = "cge-message-title";
             title.textContent = `${message.role === "user" ? "用户" : "助手"} ${index + 1}`;
-            title.style.fontSize = "12px";
-            title.style.fontWeight = "700";
-            title.style.color = "#0f172a";
             const preview = document.createElement("div");
+            preview.className = "cge-message-preview";
             preview.textContent = message.text.slice(0, 120) || "(空消息)";
-            preview.style.marginTop = "4px";
-            preview.style.fontSize = "12px";
-            preview.style.lineHeight = "1.45";
-            preview.style.color = "#475569";
-            preview.style.wordBreak = "break-word";
             content.append(title, preview);
-            row.append(checkbox, content);
+            row.append(check, content);
+            updateSelectionRowState(row, checkbox);
             list.append(row);
         });
         updateSelectionSummary();
@@ -552,14 +537,6 @@
         wrapper.style.alignItems = "center";
         wrapper.style.gap = "8px";
         const exportButton = createToolbarButton("导出", EXPORT_BUTTON_ID);
-        exportButton.style.border = "1px solid rgba(0, 0, 0, 0.1)";
-        exportButton.style.borderRadius = "999px";
-        exportButton.style.background = "#ffffff";
-        exportButton.style.color = "#111111";
-        exportButton.style.padding = "8px 14px";
-        exportButton.style.fontSize = "13px";
-        exportButton.style.fontWeight = "600";
-        exportButton.style.cursor = "pointer";
         exportButton.addEventListener("click", (event) => {
             event.stopPropagation();
             togglePanel();
@@ -646,14 +623,6 @@
         closeButton.type = "button";
         closeButton.className = "cge-panel-close";
         closeButton.textContent = "关闭";
-        closeButton.style.border = "0";
-        closeButton.style.borderRadius = "999px";
-        closeButton.style.background = "#f3f4f6";
-        closeButton.style.color = "#111111";
-        closeButton.style.padding = "8px 12px";
-        closeButton.style.fontSize = "12px";
-        closeButton.style.fontWeight = "600";
-        closeButton.style.cursor = "pointer";
         closeButton.addEventListener("click", () => {
             closePanel();
         });
@@ -731,10 +700,7 @@
         selectionSummary.style.color = "#475569";
         const messageList = document.createElement("div");
         messageList.id = MESSAGE_LIST_ID;
-        messageList.style.marginTop = "10px";
-        messageList.style.maxHeight = "260px";
-        messageList.style.overflow = "auto";
-        messageList.style.padding = "0 2px";
+        messageList.className = "cge-message-list";
         const status = document.createElement("div");
         status.id = STATUS_ID;
         status.className = "cge-panel-status";
