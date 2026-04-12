@@ -69,6 +69,8 @@
   let currentTimelineScroller = null;
   let timelineScrollFrame = 0;
   let timelineRefreshTimer = 0;
+  let lastSelectionSignature = "";
+  let lastTimelineSignature = "";
 
   function delay(ms) {
     return new Promise((resolve) => {
@@ -87,6 +89,14 @@
       .trim();
 
     return cleaned || "chatgpt-conversation";
+  }
+
+  function getConversationSignature(conversation) {
+    if (!conversation || !Array.isArray(conversation.messages)) {
+      return "";
+    }
+
+    return conversation.messages.map((message) => message.id).join("|");
   }
 
   function cleanConversationTitle() {
@@ -553,6 +563,7 @@
       }
 
       selectionLoaded = true;
+      lastSelectionSignature = getConversationSignature(latestConversation);
       renderSelectionList(latestConversation);
       setStatus("消息列表已刷新。", "muted");
     } catch (error) {
@@ -570,18 +581,29 @@
       return;
     }
 
-    latestConversation = collectConversation();
+    const nextConversation = collectConversation();
+    const nextSignature = getConversationSignature(nextConversation);
+    const selectionChanged = nextSignature !== lastSelectionSignature;
+    const timelineChanged = nextSignature !== lastTimelineSignature;
+
+    latestConversation = nextConversation;
 
     if (selectionLoaded) {
-      selectedMessageIds = new Set(
-        latestConversation.messages
-          .map((message) => message.id)
-          .filter((messageId) => selectedMessageIds.has(messageId)),
-      );
-      renderSelectionList(latestConversation);
+      if (selectionChanged) {
+        selectedMessageIds = new Set(
+          latestConversation.messages
+            .map((message) => message.id)
+            .filter((messageId) => selectedMessageIds.has(messageId)),
+        );
+        renderSelectionList(latestConversation);
+        lastSelectionSignature = nextSignature;
+      }
     }
 
-    renderTimelineList();
+    if (timelineChanged) {
+      renderTimelineList();
+      lastTimelineSignature = nextSignature;
+    }
     ensureTimelineTracking();
     refreshActiveTimelineMessage();
   }
@@ -614,6 +636,7 @@
       }
 
       renderTimelineList();
+      lastTimelineSignature = getConversationSignature(latestConversation);
       ensureTimelineTracking();
       refreshActiveTimelineMessage();
     } catch (error) {
