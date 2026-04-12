@@ -254,15 +254,20 @@
 }
 
 .cge-message-row {
+  width: 100%;
   display: grid;
   grid-template-columns: 24px 1fr;
   gap: 12px;
   align-items: start;
   padding: 12px 10px;
+  border: 0;
   border-top: 1px solid rgba(148, 163, 184, 0.12);
   border-radius: 16px;
+  appearance: none;
   background: rgba(255, 255, 255, 0.88);
+  color: inherit;
   cursor: pointer;
+  text-align: left;
   transition:
     background-color 150ms ease,
     box-shadow 150ms ease,
@@ -300,17 +305,7 @@
   width: 24px;
   height: 24px;
   margin-top: 1px;
-}
-
-.cge-message-checkbox {
-  position: absolute;
-  inset: 0;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  opacity: 0;
-  cursor: pointer;
+  pointer-events: none;
 }
 
 .cge-message-check-indicator {

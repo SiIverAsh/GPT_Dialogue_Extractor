@@ -115,23 +115,22 @@
         button.textContent = label;
         return button;
     }
-    function updateSelectionRowState(row, checkbox) {
-        row.classList.toggle("is-selected", checkbox.checked);
-        row.setAttribute("aria-selected", checkbox.checked ? "true" : "false");
+    function updateSelectionRowState(row, selected) {
+        row.classList.toggle("is-selected", selected);
+        row.setAttribute("aria-checked", selected ? "true" : "false");
     }
-    function toggleMessageSelection(messageId, checkbox, row) {
-        if (checkbox.disabled) {
+    function toggleMessageSelection(messageId, row) {
+        if (row.disabled) {
             return;
         }
-        checkbox.checked = !checkbox.checked;
-        if (checkbox.checked) {
+        const nextSelected = !selectedMessageIds.has(messageId);
+        if (nextSelected) {
             selectedMessageIds.add(messageId);
         }
         else {
             selectedMessageIds.delete(messageId);
         }
-        updateSelectionRowState(row, checkbox);
-        checkbox.setAttribute("aria-checked", checkbox.checked ? "true" : "false");
+        updateSelectionRowState(row, nextSelected);
         updateSelectionSummary();
     }
     function setStatus(message, tone) {
@@ -199,30 +198,21 @@
         }
         list.innerHTML = "";
         conversation.messages.forEach((message, index) => {
-            const row = document.createElement("div");
+            const row = document.createElement("button");
+            row.type = "button";
             row.className = "cge-message-row";
+            row.dataset.messageId = message.id;
+            row.dataset.messageToggle = "true";
+            row.setAttribute("role", "checkbox");
             if (index === 0) {
                 row.style.borderTop = "0";
             }
-            row.tabIndex = 0;
-            const checkbox = document.createElement("button");
-            checkbox.type = "button";
-            checkbox.className = "cge-message-checkbox";
-            checkbox.checked = selectedMessageIds.has(message.id);
-            checkbox.dataset.messageId = message.id;
-            checkbox.dataset.messageToggle = "true";
-            checkbox.setAttribute("role", "checkbox");
-            checkbox.setAttribute("aria-checked", checkbox.checked ? "true" : "false");
-            checkbox.setAttribute("aria-label", `选择${message.role === "user" ? "用户" : "助手"}消息 ${index + 1}`);
-            checkbox.addEventListener("click", (event) => {
-                event.stopPropagation();
-                toggleMessageSelection(message.id, checkbox, row);
-            });
+            row.setAttribute("aria-label", `选择${message.role === "user" ? "用户" : "助手"}消息 ${index + 1}`);
             const check = document.createElement("span");
             check.className = "cge-message-check";
             const indicator = document.createElement("span");
             indicator.className = "cge-message-check-indicator";
-            check.append(checkbox, indicator);
+            check.append(indicator);
             const content = document.createElement("div");
             const title = document.createElement("div");
             title.className = "cge-message-title";
@@ -232,16 +222,9 @@
             preview.textContent = message.text.slice(0, 120) || "(空消息)";
             content.append(title, preview);
             row.append(check, content);
-            updateSelectionRowState(row, checkbox);
+            updateSelectionRowState(row, selectedMessageIds.has(message.id));
             row.addEventListener("click", () => {
-                toggleMessageSelection(message.id, checkbox, row);
-            });
-            row.addEventListener("keydown", (event) => {
-                if (event.key !== "Enter" && event.key !== " ") {
-                    return;
-                }
-                event.preventDefault();
-                toggleMessageSelection(message.id, checkbox, row);
+                toggleMessageSelection(message.id, row);
             });
             list.append(row);
         });
