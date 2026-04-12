@@ -131,6 +131,24 @@
 
   function updateSelectionRowState(row, checkbox) {
     row.classList.toggle("is-selected", checkbox.checked);
+    row.setAttribute("aria-selected", checkbox.checked ? "true" : "false");
+  }
+
+  function toggleMessageSelection(messageId, checkbox, row) {
+    if (checkbox.disabled) {
+      return;
+    }
+
+    checkbox.checked = !checkbox.checked;
+    if (checkbox.checked) {
+      selectedMessageIds.add(messageId);
+    } else {
+      selectedMessageIds.delete(messageId);
+    }
+
+    updateSelectionRowState(row, checkbox);
+    checkbox.setAttribute("aria-checked", checkbox.checked ? "true" : "false");
+    updateSelectionSummary();
   }
 
   function setStatus(message, tone) {
@@ -180,9 +198,11 @@
       button.style.cursor = disabled ? "wait" : "pointer";
     });
 
-    const inputs = document.querySelectorAll(`#${MESSAGE_LIST_ID} input[type="checkbox"]`);
-    inputs.forEach((input) => {
-      input.disabled = disabled;
+    const toggles = document.querySelectorAll(`#${MESSAGE_LIST_ID} button[data-message-toggle="true"]`);
+    toggles.forEach((toggle) => {
+      if (toggle instanceof HTMLButtonElement) {
+        toggle.disabled = disabled;
+      }
     });
   }
 
@@ -210,26 +230,28 @@
     list.innerHTML = "";
 
     conversation.messages.forEach((message, index) => {
-      const row = document.createElement("label");
+      const row = document.createElement("div");
       row.className = "cge-message-row";
       if (index === 0) {
         row.style.borderTop = "0";
       }
+      row.tabIndex = 0;
 
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
+      const checkbox = document.createElement("button");
+      checkbox.type = "button";
       checkbox.className = "cge-message-checkbox";
       checkbox.checked = selectedMessageIds.has(message.id);
       checkbox.dataset.messageId = message.id;
-      checkbox.addEventListener("change", () => {
-        if (checkbox.checked) {
-          selectedMessageIds.add(message.id);
-        } else {
-          selectedMessageIds.delete(message.id);
-        }
-
-        updateSelectionRowState(row, checkbox);
-        updateSelectionSummary();
+      checkbox.dataset.messageToggle = "true";
+      checkbox.setAttribute("role", "checkbox");
+      checkbox.setAttribute("aria-checked", checkbox.checked ? "true" : "false");
+      checkbox.setAttribute(
+        "aria-label",
+        `选择${message.role === "user" ? "用户" : "助手"}消息 ${index + 1}`,
+      );
+      checkbox.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleMessageSelection(message.id, checkbox, row);
       });
 
       const check = document.createElement("span");
@@ -252,6 +274,17 @@
       content.append(title, preview);
       row.append(check, content);
       updateSelectionRowState(row, checkbox);
+      row.addEventListener("click", () => {
+        toggleMessageSelection(message.id, checkbox, row);
+      });
+      row.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+
+        event.preventDefault();
+        toggleMessageSelection(message.id, checkbox, row);
+      });
       list.append(row);
     });
 
