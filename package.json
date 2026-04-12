@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "A browser extension for exporting ChatGPT conversations using TypeScript sources and DOM-based extraction.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
