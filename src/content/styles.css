@@ -261,11 +261,11 @@
   padding: 12px 10px;
   border-top: 1px solid rgba(148, 163, 184, 0.12);
   border-radius: 16px;
+  background: rgba(255, 255, 255, 0.88);
   cursor: pointer;
   transition:
     background-color 150ms ease,
     box-shadow 150ms ease,
-    transform 150ms ease,
     border-color 150ms ease;
 }
 
@@ -274,8 +274,8 @@
 }
 
 .cge-message-row:hover {
-  background: rgba(241, 245, 249, 0.92);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
+  background: rgba(238, 246, 255, 0.96);
+  box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.2);
 }
 
 .cge-message-row:focus-within {
@@ -285,10 +285,10 @@
 }
 
 .cge-message-row.is-selected {
-  background: linear-gradient(135deg, rgba(239, 246, 255, 0.96), rgba(236, 253, 245, 0.92));
+  background: linear-gradient(135deg, rgba(219, 234, 254, 0.98), rgba(224, 242, 254, 0.96));
   box-shadow:
-    inset 0 0 0 1px rgba(56, 189, 248, 0.16),
-    0 10px 24px rgba(37, 99, 235, 0.08);
+    inset 0 0 0 1px rgba(59, 130, 246, 0.22),
+    0 8px 18px rgba(59, 130, 246, 0.08);
 }
 
 .cge-message-check {
@@ -321,7 +321,6 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.8),
     0 4px 12px rgba(15, 23, 42, 0.08);
   transition:
-    transform 150ms ease,
     border-color 150ms ease,
     background 150ms ease,
     box-shadow 150ms ease;
@@ -343,7 +342,6 @@
 
 .cge-message-row:hover .cge-message-check-indicator {
   border-color: rgba(37, 99, 235, 0.3);
-  transform: scale(1.04);
 }
 
 .cge-message-row.is-selected .cge-message-check-indicator {
@@ -359,21 +357,17 @@
   transform: rotate(45deg) scale(1);
 }
 
-.cge-message-checkbox:active + .cge-message-check-indicator {
-  transform: scale(0.94);
-}
-
 .cge-message-title {
   font-size: 12px;
   font-weight: 700;
-  color: #0f172a;
+  color: #111827;
 }
 
 .cge-message-preview {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.5;
-  color: #475569;
+  color: #334155;
   word-break: break-word;
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -383,34 +377,35 @@
 
 .dark .cge-message-row {
   border-top-color: rgba(148, 163, 184, 0.08);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .dark .cge-message-row:hover {
-  background: rgba(34, 39, 48, 0.92);
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.08);
+  background: rgba(59, 130, 246, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.18);
 }
 
 .dark .cge-message-row.is-selected {
-  background: linear-gradient(135deg, rgba(37, 99, 235, 0.18), rgba(6, 182, 212, 0.14));
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(34, 211, 238, 0.16));
   box-shadow:
-    inset 0 0 0 1px rgba(125, 211, 252, 0.22),
-    0 10px 24px rgba(2, 6, 23, 0.16);
+    inset 0 0 0 1px rgba(125, 211, 252, 0.24),
+    0 8px 18px rgba(2, 6, 23, 0.12);
 }
 
 .dark .cge-message-check-indicator {
   border-color: rgba(148, 163, 184, 0.28);
-  background: linear-gradient(180deg, #21242d, #171a22);
+  background: linear-gradient(180deg, #2b3140, #202633);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 4px 12px rgba(2, 6, 23, 0.18);
+    0 4px 12px rgba(2, 6, 23, 0.14);
 }
 
 .dark .cge-message-title {
-  color: #e5e7eb;
+  color: #f3f4f6;
 }
 
 .dark .cge-message-preview {
-  color: #aeb7c5;
+  color: #d1d5db;
 }
 
 .cge-panel-status {
