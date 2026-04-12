@@ -276,7 +276,6 @@
 .cge-message-row:hover {
   background: rgba(241, 245, 249, 0.92);
   box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
-  transform: translateY(-1px);
 }
 
 .cge-message-row:focus-within {
@@ -392,10 +391,10 @@
 }
 
 .dark .cge-message-row.is-selected {
-  background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(16, 37, 53, 0.96));
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.18), rgba(6, 182, 212, 0.14));
   box-shadow:
-    inset 0 0 0 1px rgba(56, 189, 248, 0.18),
-    0 10px 24px rgba(2, 6, 23, 0.28);
+    inset 0 0 0 1px rgba(125, 211, 252, 0.22),
+    0 10px 24px rgba(2, 6, 23, 0.16);
 }
 
 .dark .cge-message-check-indicator {
