@@ -6,6 +6,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     const filename = typeof message.filename === "string" ? message.filename : "chatgpt-conversation.txt";
     const url = typeof message.url === "string" ? message.url : "";
+    const saveAs = typeof message.saveAs === "boolean" ? message.saveAs : true;
+    const conflictAction = typeof message.conflictAction === "string" ? message.conflictAction : "uniquify";
     if (!url) {
         sendResponse({
             ok: false,
@@ -16,8 +18,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     chrome.downloads.download({
         url,
         filename,
-        saveAs: true,
-        conflictAction: "uniquify",
+        saveAs,
+        conflictAction,
     }, (downloadId) => {
         if (chrome.runtime.lastError) {
             sendResponse({

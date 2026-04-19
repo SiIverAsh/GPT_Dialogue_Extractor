@@ -17,6 +17,7 @@ New-Item -ItemType Directory -Path (Join-Path $packageRoot "src\\content") | Out
 Copy-Item -LiteralPath (Join-Path $repoRoot "manifest.json") -Destination $packageRoot
 Copy-Item -LiteralPath (Join-Path $repoRoot "src\\background\\index.js") -Destination (Join-Path $packageRoot "src\\background\\index.js")
 Copy-Item -LiteralPath (Join-Path $repoRoot "src\\content\\index.js") -Destination (Join-Path $packageRoot "src\\content\\index.js")
+Copy-Item -LiteralPath (Join-Path $repoRoot "src\\content\\page-hook.js") -Destination (Join-Path $packageRoot "src\\content\\page-hook.js")
 Copy-Item -LiteralPath (Join-Path $repoRoot "src\\content\\styles.css") -Destination (Join-Path $packageRoot "src\\content\\styles.css")
 Copy-Item -LiteralPath (Join-Path $repoRoot "PRIVACY_POLICY.md") -Destination (Join-Path $packageRoot "PRIVACY_POLICY.md")
 

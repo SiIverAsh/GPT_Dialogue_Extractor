@@ -81,6 +81,16 @@
     let timelineLockedMessageId = "";
     let timelineLockedUntil = 0;
     let timelineDirectoryExpanded = false;
+    const documentAssetHintCache = new Map();
+    const pageNetworkEvents = [];
+    const PAGE_HOOK_SOURCE = "cge-page-hook";
+    const PAGE_HOOK_TYPE = "cge-network-event";
+    const PAGE_FETCH_REQUEST_TYPE = "cge-page-fetch-request";
+    const PAGE_FETCH_RESPONSE_TYPE = "cge-page-fetch-response";
+    const MAX_PAGE_NETWORK_EVENTS = 200;
+    let pageFetchSequence = 0;
+    const pendingPageFetches = new Map();
+    const primedNativeAssetKeys = new Set();
     function delay(ms) {
         return new Promise((resolve) => {
             window.setTimeout(resolve, ms);
@@ -96,6 +106,14 @@
             .trim();
         return cleaned || "chatgpt-conversation";
     }
+    function escapeRegExp(value) {
+        return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    function buildAssetTrackingKey(message, asset) {
+        const turnPart = normalizeWhitespace((message && (message.turnId || message.id)) || "");
+        const namePart = normalizeWhitespace((asset && (asset.filename || asset.url)) || "");
+        return `${turnPart}:${namePart}`;
+    }
     function getConversationSignature(conversation) {
         if (!conversation || !Array.isArray(conversation.messages)) {
             return "";
@@ -108,6 +126,57 @@
             .replace(/\s*-\s*ChatGPT\s*$/i, "")
             .replace(/\s*\|\s*ChatGPT\s*$/i, "")
             .trim());
+    }
+    function rememberPageNetworkEvent(detail) {
+        if (!detail || typeof detail !== "object") {
+            return;
+        }
+        pageNetworkEvents.push({
+            ts: typeof detail.ts === "number" ? detail.ts : Date.now(),
+            reason: typeof detail.reason === "string" ? detail.reason : "",
+            url: typeof detail.url === "string" ? detail.url : "",
+            urls: Array.isArray(detail.urls) ? detail.urls.filter((value) => typeof value === "string" && value) : [],
+            fileIds: Array.isArray(detail.fileIds) ? detail.fileIds.filter((value) => typeof value === "string" && value) : [],
+            fileNames: Array.isArray(detail.fileNames) ? detail.fileNames.filter((value) => typeof value === "string" && value) : [],
+        });
+        if (pageNetworkEvents.length > MAX_PAGE_NETWORK_EVENTS) {
+            pageNetworkEvents.splice(0, pageNetworkEvents.length - MAX_PAGE_NETWORK_EVENTS);
+        }
+    }
+    function installPageHookBridge() {
+        window.addEventListener("message", (event) => {
+            if (event.source !== window || event.origin !== window.location.origin) {
+                return;
+            }
+            const data = event.data;
+            if (!data || data.source !== PAGE_HOOK_SOURCE || data.type !== PAGE_HOOK_TYPE) {
+                if (data && data.source === PAGE_HOOK_SOURCE && data.type === PAGE_FETCH_RESPONSE_TYPE) {
+                    const requestId = typeof data.requestId === "string" ? data.requestId : "";
+                    if (!requestId || !pendingPageFetches.has(requestId)) {
+                        return;
+                    }
+                    const pending = pendingPageFetches.get(requestId);
+                    pendingPageFetches.delete(requestId);
+                    pending.resolve(data);
+                }
+                return;
+            }
+            rememberPageNetworkEvent(data);
+        });
+    }
+    function injectPageHook() {
+        const runtime = typeof chrome !== "undefined" ? chrome.runtime : null;
+        if (!runtime || typeof runtime.getURL !== "function") {
+            return;
+        }
+        if (document.getElementById("cge-page-hook-script")) {
+            return;
+        }
+        const script = document.createElement("script");
+        script.id = "cge-page-hook-script";
+        script.src = runtime.getURL("src/content/page-hook.js");
+        script.async = false;
+        (document.head || document.documentElement).appendChild(script);
     }
     function createToolbarButton(label, id) {
         const button = document.createElement("button");
@@ -228,7 +297,7 @@
             if (index === 0) {
                 row.style.borderTop = "0";
             }
-            row.setAttribute("aria-label", `选择${message.role === "user" ? "用户" : "助手"}消息 ${index + 1}`);
+            row.setAttribute("aria-label", `选择${message.role === "user" ? "用户" : "助手"}消息 ${message.index}`);
             const check = document.createElement("span");
             check.className = "cge-message-check";
             const indicator = document.createElement("span");
@@ -237,7 +306,7 @@
             const content = document.createElement("div");
             const title = document.createElement("div");
             title.className = "cge-message-title";
-            title.textContent = `${message.role === "user" ? "用户" : "助手"} ${index + 1}`;
+            title.textContent = `${message.role === "user" ? "用户" : "助手"} ${message.index}`;
             const preview = document.createElement("div");
             preview.className = "cge-message-preview";
             preview.textContent = message.text.slice(0, 120) || "(空消息)";
@@ -923,7 +992,7 @@
         header.append(title, closeButton);
         const description = document.createElement("div");
         description.className = "cge-panel-description";
-        description.textContent = "会先向上滚动补齐历史，再下载 JSON 或 Markdown。";
+        description.textContent = "会先向上滚动补齐历史，再下载 JSON、Markdown、PDF 或 ZIP。";
         description.style.marginTop = "6px";
         description.style.fontSize = "12px";
         description.style.lineHeight = "1.5";
@@ -942,12 +1011,13 @@
         const actions = document.createElement("div");
         actions.className = "cge-panel-actions";
         actions.style.display = "grid";
-        actions.style.gridTemplateColumns = "repeat(3, minmax(0, 1fr))";
+        actions.style.gridTemplateColumns = "repeat(2, minmax(0, 1fr))";
         actions.style.gap = "8px";
         actions.style.marginTop = "14px";
         actions.append(createButton("导出 JSON", "json"));
         actions.append(createButton("导出 Markdown", "markdown"));
         actions.append(createButton("导出 PDF", "pdf"));
+        actions.append(createButton("导出 ZIP", "zip"));
         const selectionHeader = document.createElement("div");
         selectionHeader.style.display = "flex";
         selectionHeader.style.alignItems = "center";
@@ -1491,23 +1561,576 @@
             .filter(Boolean);
         return normalizeWhitespace(blocks.join("\n\n"));
     }
+    function normalizeAssetUrl(rawUrl) {
+        if (typeof rawUrl !== "string") {
+            return "";
+        }
+        const trimmed = rawUrl.trim();
+        if (!trimmed || trimmed.startsWith("#") || trimmed.toLowerCase().startsWith("javascript:")) {
+            return "";
+        }
+        try {
+            return new URL(trimmed, window.location.href).href;
+        }
+        catch {
+            return trimmed;
+        }
+    }
+    function sanitizeAssetLabel(value, fallback) {
+        const text = normalizeWhitespace(value || "").replace(/[\[\]]/g, "");
+        return text || fallback;
+    }
+    function fileNameFromUrl(url) {
+        try {
+            const parsed = new URL(url);
+            const segments = parsed.pathname.split("/").filter(Boolean);
+            const lastSegment = segments[segments.length - 1] || "";
+            return decodeURIComponent(lastSegment);
+        }
+        catch {
+            return "";
+        }
+    }
+    function inferMimeTypeFromUrl(url) {
+        const lower = url.toLowerCase();
+        if (lower.startsWith("data:")) {
+            const match = lower.match(/^data:([^;,]+)/);
+            return match ? match[1] : "";
+        }
+        if (/\.(png)(?:$|[?#])/i.test(lower))
+            return "image/png";
+        if (/\.(jpe?g)(?:$|[?#])/i.test(lower))
+            return "image/jpeg";
+        if (/\.(gif)(?:$|[?#])/i.test(lower))
+            return "image/gif";
+        if (/\.(webp)(?:$|[?#])/i.test(lower))
+            return "image/webp";
+        if (/\.(svg)(?:$|[?#])/i.test(lower))
+            return "image/svg+xml";
+        if (/\.(pdf)(?:$|[?#])/i.test(lower))
+            return "application/pdf";
+        if (/\.(docx)(?:$|[?#])/i.test(lower))
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (/\.(doc)(?:$|[?#])/i.test(lower))
+            return "application/msword";
+        if (/\.(xlsx)(?:$|[?#])/i.test(lower))
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (/\.(xls)(?:$|[?#])/i.test(lower))
+            return "application/vnd.ms-excel";
+        if (/\.(pptx)(?:$|[?#])/i.test(lower))
+            return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        if (/\.(ppt)(?:$|[?#])/i.test(lower))
+            return "application/vnd.ms-powerpoint";
+        if (/\.(txt|md|json|csv)(?:$|[?#])/i.test(lower))
+            return "text/plain";
+        if (/\.(zip|rar|7z|tar|gz)(?:$|[?#])/i.test(lower))
+            return "application/octet-stream";
+        return "";
+    }
+    function looksLikeStaticAssetUrl(url) {
+        if (typeof url !== "string" || !url) {
+            return false;
+        }
+        const normalized = normalizeAssetUrl(url);
+        if (!normalized) {
+            return false;
+        }
+        const lower = normalized.toLowerCase();
+        if (lower === window.location.href.toLowerCase()) {
+            return false;
+        }
+        if (/^https?:\/\/chatgpt\.com\/c\/[a-z0-9-]+\/?$/i.test(normalized)) {
+            return false;
+        }
+        if (lower.startsWith("blob:") ||
+            lower.startsWith("data:") ||
+            lower.includes("/backend-api/estuary/content") ||
+            lower.includes("/backend-api/files/") ||
+            lower.includes("oaiusercontent.com") ||
+            lower.includes("/download") ||
+            lower.includes("/attachment") ||
+            lower.includes("/asset")) {
+            return true;
+        }
+        return Boolean(inferMimeTypeFromUrl(normalized));
+    }
+    function getAnchorLabel(anchor) {
+        return (anchor.getAttribute("download") ||
+            anchor.getAttribute("title") ||
+            anchor.getAttribute("aria-label") ||
+            anchor.textContent ||
+            "");
+    }
+    function looksLikeFilename(value) {
+        return /[^\s]+\.[a-z0-9]{1,10}(?:$|\s)/i.test(value.trim());
+    }
+    function isLikelyFileNameText(value) {
+        const text = normalizeWhitespace(value || "");
+        if (!text || text.length > 180) {
+            return false;
+        }
+        return /[^\s]+\.(pdf|docx?|xlsx?|pptx?|csv|txt|md|json|zip|rar|7z|png|jpe?g|webp|gif|svg)(?:$|\s)/i.test(text);
+    }
+    function extractUrlCandidates(value) {
+        if (typeof value !== "string" || !value) {
+            return [];
+        }
+        const candidates = new Set();
+        const normalized = value
+            .replace(/&amp;/g, "&")
+            .replace(/\\u002F/g, "/")
+            .replace(/\\\//g, "/");
+        const patterns = [
+            /https?:\/\/[^\s"'<>]+/gi,
+            /\/backend-api\/estuary\/content\?[^\s"'<>]+/gi,
+            /\/backend-api\/files\/[^\s"'<>]+/gi,
+        ];
+        patterns.forEach((pattern) => {
+            const matches = normalized.match(pattern) || [];
+            matches.forEach((match) => {
+                const trimmed = match.replace(/[),.;]+$/g, "");
+                if (trimmed) {
+                    candidates.add(trimmed);
+                }
+            });
+        });
+        return Array.from(candidates);
+    }
+    function extractFileIds(value) {
+        if (typeof value !== "string" || !value) {
+            return [];
+        }
+        const matches = value.match(/file[_-][a-z0-9]+/gi) || [];
+        return Array.from(new Set(matches.map((match) => match.replace("-", "_"))));
+    }
+    function findDirectAssetUrl(root) {
+        if (!(root instanceof Element)) {
+            return "";
+        }
+        const nodes = [root, ...Array.from(root.querySelectorAll("*"))];
+        if (root instanceof HTMLElement) {
+            const closestForm = root.closest("form");
+            if (closestForm instanceof Element && !nodes.includes(closestForm)) {
+                nodes.push(closestForm);
+            }
+            const parentForm = root.parentElement ? root.parentElement.closest("form") : null;
+            if (parentForm instanceof Element && !nodes.includes(parentForm)) {
+                nodes.push(parentForm);
+            }
+        }
+        for (const node of nodes) {
+            if (!(node instanceof Element)) {
+                continue;
+            }
+            const attributes = [];
+            if (node instanceof HTMLElement && node.dataset) {
+                Object.entries(node.dataset).forEach((entry) => {
+                    attributes.push({
+                        name: `data-${entry[0]}`,
+                        value: String(entry[1] || ""),
+                    });
+                });
+            }
+            Array.from(node.attributes).forEach((attribute) => {
+                attributes.push(attribute);
+            });
+            for (const attribute of attributes) {
+                const candidates = extractUrlCandidates(attribute.value);
+                for (const candidate of candidates) {
+                    const normalized = normalizeAssetUrl(candidate);
+                    if (looksLikeStaticAssetUrl(normalized)) {
+                        return normalized;
+                    }
+                }
+            }
+            if (node instanceof HTMLButtonElement) {
+                const formAction = node.formAction || node.getAttribute("formaction") || "";
+                const normalized = normalizeAssetUrl(formAction);
+                if (looksLikeStaticAssetUrl(normalized)) {
+                    return normalized;
+                }
+            }
+            if (node instanceof HTMLFormElement) {
+                const action = node.action || node.getAttribute("action") || "";
+                const normalized = normalizeAssetUrl(action);
+                if (looksLikeStaticAssetUrl(normalized)) {
+                    return normalized;
+                }
+            }
+        }
+        return "";
+    }
+    function collectAssetHintsFromString(value, state) {
+        if (typeof value !== "string" || !value) {
+            return;
+        }
+        extractUrlCandidates(value).forEach((candidate) => {
+            const normalized = normalizeAssetUrl(candidate);
+            if (looksLikeStaticAssetUrl(normalized)) {
+                state.urls.add(normalized);
+            }
+        });
+        extractFileIds(value).forEach((id) => {
+            state.fileIds.add(id);
+        });
+        if (isLikelyFileNameText(value)) {
+            state.fileNames.add(sanitizeAssetLabel(value, "attachment"));
+        }
+    }
+    function walkAssetHintValue(value, state, seen, depth) {
+        if (value == null || depth > 6) {
+            return;
+        }
+        if (typeof value === "string") {
+            collectAssetHintsFromString(value, state);
+            return;
+        }
+        if (typeof value !== "object") {
+            return;
+        }
+        if (seen.has(value)) {
+            return;
+        }
+        seen.add(value);
+        if (Array.isArray(value)) {
+            value.slice(0, 40).forEach((item) => {
+                walkAssetHintValue(item, state, seen, depth + 1);
+            });
+            return;
+        }
+        const entries = Object.entries(value).slice(0, 80);
+        entries.forEach(([key, nextValue]) => {
+            collectAssetHintsFromString(key, state);
+            walkAssetHintValue(nextValue, state, seen, depth + 1);
+        });
+    }
+    function extractReactAssetMetadata(root) {
+        if (!(root instanceof HTMLElement)) {
+            return {
+                urls: [],
+                fileIds: [],
+                fileNames: [],
+            };
+        }
+        const state = {
+            urls: new Set(),
+            fileIds: new Set(),
+            fileNames: new Set(),
+        };
+        const seen = new WeakSet();
+        const nodes = [root, ...Array.from(root.querySelectorAll("*")).slice(0, 40)];
+        nodes.forEach((node) => {
+            if (!(node instanceof HTMLElement)) {
+                return;
+            }
+            Object.getOwnPropertyNames(node)
+                .filter((name) => name.startsWith("__reactProps$") || name.startsWith("__reactFiber$") || name.startsWith("__reactEventHandlers$"))
+                .forEach((name) => {
+                try {
+                    walkAssetHintValue(node[name], state, seen, 0);
+                }
+                catch {
+                    // Ignore opaque React internals that throw during traversal.
+                }
+            });
+        });
+        return {
+            urls: Array.from(state.urls),
+            fileIds: Array.from(state.fileIds),
+            fileNames: Array.from(state.fileNames),
+        };
+    }
+    function extractDocumentAssetMetadata(filename) {
+        const normalizedName = normalizeWhitespace(filename || "");
+        if (!normalizedName) {
+            return {
+                urls: [],
+                fileIds: [],
+                fileNames: [],
+            };
+        }
+        if (documentAssetHintCache.has(normalizedName)) {
+            return documentAssetHintCache.get(normalizedName);
+        }
+        const state = {
+            urls: new Set(),
+            fileIds: new Set(),
+            fileNames: new Set(),
+        };
+        const needle = escapeRegExp(normalizedName);
+        const pattern = new RegExp(`.{0,600}${needle}.{0,600}`, "gi");
+        const scriptTexts = Array.from(document.querySelectorAll("script"))
+            .map((node) => node.textContent || "")
+            .filter((text) => text.includes(normalizedName))
+            .slice(0, 20);
+        scriptTexts.forEach((text) => {
+            const matches = text.match(pattern) || [];
+            if (!matches.length) {
+                collectAssetHintsFromString(text, state);
+                return;
+            }
+            matches.slice(0, 12).forEach((match) => {
+                collectAssetHintsFromString(match, state);
+            });
+        });
+        const metadata = {
+            urls: Array.from(state.urls),
+            fileIds: Array.from(state.fileIds),
+            fileNames: Array.from(state.fileNames),
+        };
+        documentAssetHintCache.set(normalizedName, metadata);
+        return metadata;
+    }
+    function findFileIdHints(root) {
+        if (!(root instanceof HTMLElement)) {
+            return [];
+        }
+        const hints = new Set();
+        const nodes = [root, ...Array.from(root.querySelectorAll("*"))];
+        for (const node of nodes) {
+            if (!(node instanceof HTMLElement)) {
+                continue;
+            }
+            Array.from(node.attributes).forEach((attribute) => {
+                extractFileIds(attribute.value).forEach((id) => {
+                    hints.add(id);
+                });
+            });
+            extractFileIds(node.textContent || "").forEach((id) => {
+                hints.add(id);
+            });
+        }
+        return Array.from(hints);
+    }
+    function findCandidateAssetCards(root) {
+        if (!(root instanceof HTMLElement)) {
+            return [];
+        }
+        const selectors = [
+            '[data-testid*="file"]',
+            '[data-testid*="attachment"]',
+            '[data-testid*="upload"]',
+            '[data-testid*="image"]',
+            '[data-testid*="preview"]',
+            '[aria-label*="download" i]',
+            '[aria-label*="attachment" i]',
+            '[aria-label*="image" i]',
+        ];
+        const results = new Set();
+        selectors.forEach((selector) => {
+            root.querySelectorAll(selector).forEach((node) => {
+                if (node instanceof HTMLElement) {
+                    results.add(node);
+                }
+            });
+        });
+        root.querySelectorAll("button, div, article, li").forEach((node) => {
+            if (!(node instanceof HTMLElement)) {
+                return;
+            }
+            const text = normalizeWhitespace(node.textContent || "");
+            if (isLikelyFileNameText(text)) {
+                results.add(node);
+            }
+        });
+        return Array.from(results);
+    }
+    function isLikelyAttachmentAnchor(anchor) {
+        const rawHref = anchor.getAttribute("href") || "";
+        const href = normalizeAssetUrl(rawHref);
+        if (!href) {
+            return false;
+        }
+        if (anchor.querySelector("img")) {
+            return false;
+        }
+        if (anchor.hasAttribute("download")) {
+            return true;
+        }
+        if (href.startsWith("blob:")) {
+            return true;
+        }
+        const lowerHref = href.toLowerCase();
+        if (lowerHref.includes("/files/") ||
+            lowerHref.includes("/file-") ||
+            lowerHref.includes("/download") ||
+            lowerHref.includes("/asset") ||
+            lowerHref.includes("/attachment")) {
+            return true;
+        }
+        const label = getAnchorLabel(anchor);
+        if (looksLikeFilename(label) || looksLikeFilename(fileNameFromUrl(href))) {
+            return true;
+        }
+        const testId = anchor.getAttribute("data-testid") || "";
+        if (/file|attachment|download/i.test(testId)) {
+            return true;
+        }
+        return false;
+    }
+    function extractMessageAssets(...roots) {
+        const validRoots = roots.filter((root) => root instanceof HTMLElement);
+        if (!validRoots.length) {
+            return [];
+        }
+        const seen = new Set();
+        const assets = [];
+        validRoots.forEach((root) => {
+            root.querySelectorAll("img").forEach((node) => {
+                if (!(node instanceof HTMLImageElement)) {
+                    return;
+                }
+                const url = normalizeAssetUrl(node.currentSrc || node.getAttribute("src") || "");
+                if (!url || seen.has(`image:${url}`)) {
+                    return;
+                }
+                seen.add(`image:${url}`);
+                const alt = normalizeWhitespace(node.getAttribute("alt") || "");
+                const filename = sanitizeAssetLabel(fileNameFromUrl(url), alt || "image");
+                assets.push({
+                    kind: "image",
+                    url,
+                    filename,
+                    mimeType: inferMimeTypeFromUrl(url),
+                    alt,
+                });
+            });
+            root.querySelectorAll("a[href]").forEach((node) => {
+                if (!(node instanceof HTMLAnchorElement) || !isLikelyAttachmentAnchor(node)) {
+                    return;
+                }
+                const url = normalizeAssetUrl(node.getAttribute("href") || "");
+                if (!url || seen.has(`file:${url}`)) {
+                    return;
+                }
+                seen.add(`file:${url}`);
+                const label = getAnchorLabel(node);
+                const filename = sanitizeAssetLabel(label || fileNameFromUrl(url), "attachment");
+                assets.push({
+                    kind: "file",
+                    url,
+                    filename,
+                    mimeType: inferMimeTypeFromUrl(url),
+                });
+            });
+        });
+        validRoots.flatMap((root) => findCandidateAssetCards(root)).forEach((card, index) => {
+            const anchor = card.closest("a[href]") || card.querySelector("a[href]");
+            if (anchor instanceof HTMLAnchorElement) {
+                const url = normalizeAssetUrl(anchor.getAttribute("href") || "");
+                if (url && !seen.has(`file:${url}`) && !seen.has(`image:${url}`)) {
+                    const label = getAnchorLabel(anchor) || card.textContent || "";
+                    assets.push({
+                        kind: "file",
+                        url,
+                        filename: sanitizeAssetLabel(label || fileNameFromUrl(url), `attachment-${index + 1}`),
+                        mimeType: inferMimeTypeFromUrl(url),
+                    });
+                    seen.add(`file:${url}`);
+                }
+                return;
+            }
+            const directUrl = findDirectAssetUrl(card);
+            if (directUrl &&
+                !seen.has(`file:${directUrl}`) &&
+                !seen.has(`image:${directUrl}`) &&
+                isCompatibleFileCardUrl(directUrl, card.textContent || "", findFileIdHints(card))) {
+                const label = card.textContent || "";
+                assets.push({
+                    kind: "file",
+                    url: directUrl,
+                    filename: sanitizeAssetLabel(label || fileNameFromUrl(directUrl), `attachment-${index + 1}`),
+                    mimeType: inferMimeTypeFromUrl(directUrl),
+                });
+                seen.add(`file:${directUrl}`);
+                return;
+            }
+            const reactMetadata = extractReactAssetMetadata(card);
+            const reactUrl = reactMetadata.urls.find((candidate) => !seen.has(`file:${candidate}`) &&
+                !seen.has(`image:${candidate}`) &&
+                isCompatibleFileCardUrl(candidate, card.textContent || reactMetadata.fileNames[0] || "", reactMetadata.fileIds));
+            if (reactUrl) {
+                const label = card.textContent || reactMetadata.fileNames[0] || "";
+                assets.push({
+                    kind: "file",
+                    url: reactUrl,
+                    filename: sanitizeAssetLabel(label || fileNameFromUrl(reactUrl), `attachment-${index + 1}`),
+                    mimeType: inferMimeTypeFromUrl(reactUrl),
+                });
+                seen.add(`file:${reactUrl}`);
+                return;
+            }
+            const text = normalizeWhitespace(card.textContent || "");
+            if (!isLikelyFileNameText(text)) {
+                return;
+            }
+            const documentMetadata = extractDocumentAssetMetadata(text);
+            const documentUrl = documentMetadata.urls.find((candidate) => !seen.has(`file:${candidate}`) &&
+                !seen.has(`image:${candidate}`) &&
+                isCompatibleFileCardUrl(candidate, text, documentMetadata.fileIds));
+            if (documentUrl) {
+                assets.push({
+                    kind: "file",
+                    url: documentUrl,
+                    filename: sanitizeAssetLabel(text || fileNameFromUrl(documentUrl), `attachment-${index + 1}`),
+                    mimeType: inferMimeTypeFromUrl(documentUrl),
+                });
+                seen.add(`file:${documentUrl}`);
+                return;
+            }
+            const syntheticKey = `file-card:${text}`;
+            if (seen.has(syntheticKey)) {
+                return;
+            }
+            seen.add(syntheticKey);
+            const fileIdHints = Array.from(new Set([...findFileIdHints(card), ...reactMetadata.fileIds, ...documentMetadata.fileIds]));
+            const hintSuffix = fileIdHints.length ? ` File id hints: ${fileIdHints.join(", ")}.` : "";
+            assets.push({
+                kind: "file",
+                url: "",
+                filename: sanitizeAssetLabel(text, `attachment-${index + 1}`),
+                downloadStatus: "failed",
+                error: `Detected an attachment card in the message, but no direct download URL was found in the DOM.${hintSuffix}`,
+            });
+        });
+        return assets;
+    }
+    function formatAssetMarkdown(asset, index) {
+        const fallback = asset.kind === "image" ? `Image ${index + 1}` : `Attachment ${index + 1}`;
+        const label = sanitizeAssetLabel(asset.filename || asset.alt || "", fallback);
+        const suffix = [];
+        if (asset.alt && asset.alt !== label) {
+            suffix.push(`alt: ${asset.alt}`);
+        }
+        if (asset.mimeType) {
+            suffix.push(asset.mimeType);
+        }
+        const note = suffix.length ? ` (${suffix.join(", ")})` : "";
+        const prefix = asset.kind === "image" ? "- Image" : "- Attachment";
+        return `${prefix}: [${label}](${asset.url})${note}`;
+    }
     function collectConversation() {
         const turns = resolveTurns();
         const messages = [];
+        let userMessageIndex = 0;
+        let assistantMessageIndex = 0;
         turns.forEach((turn, index) => {
             const turnId = turn.getAttribute("data-testid") || `conversation-turn-${index + 1}`;
             const userBody = resolveUserBody(turn);
             if (userBody instanceof HTMLElement) {
                 const text = normalizeWhitespace(userBody.innerText);
-                if (text) {
+                const assets = extractMessageAssets(turn, userBody);
+                if (text || assets.length) {
+                    userMessageIndex += 1;
                     messages.push({
                         id: `${turnId}:user`,
                         turnId,
-                        index: messages.length + 1,
+                        index: userMessageIndex,
                         role: "user",
                         text,
                         markdown: text,
                         html: userBody.innerHTML,
+                        assets,
                     });
                 }
                 return;
@@ -1522,17 +2145,20 @@
             }
             const markdown = serializeAssistantMarkdown(assistantBody);
             const text = normalizeWhitespace(assistantBody.innerText || markdown);
-            if (!text && !markdown) {
+            const assets = extractMessageAssets(turn, assistantNode, assistantBody);
+            if (!text && !markdown && !assets.length) {
                 return;
             }
+            assistantMessageIndex += 1;
             messages.push({
                 id: `${turnId}:assistant`,
                 turnId,
-                index: messages.length + 1,
+                index: assistantMessageIndex,
                 role: "assistant",
                 text,
                 markdown: markdown || text,
                 html: assistantBody.innerHTML,
+                assets,
             });
         });
         return {
@@ -1571,10 +2197,19 @@
             "",
         ];
         conversation.messages.forEach((message) => {
-            const heading = message.role === "user" ? "User" : "Assistant";
+            const heading = `${message.role === "user" ? "User" : "Assistant"} ${message.index}`;
             lines.push(`## ${heading}`);
             lines.push("");
-            lines.push(message.role === "assistant" ? message.markdown : message.text);
+            const body = message.role === "assistant" ? message.markdown : message.text;
+            lines.push(body || "(No text content)");
+            if (Array.isArray(message.assets) && message.assets.length) {
+                lines.push("");
+                lines.push("### Assets");
+                lines.push("");
+                message.assets.forEach((asset, index) => {
+                    lines.push(formatAssetMarkdown(asset, index));
+                });
+            }
             lines.push("");
         });
         return lines.join("\n").trimEnd() + "\n";
@@ -1610,6 +2245,746 @@
         const base64 = dataUrl.slice(markerIndex + base64Marker.length);
         const binary = atob(base64);
         return binaryStringToUint8Array(binary);
+    }
+    function parseDataUrl(dataUrl) {
+        const commaIndex = dataUrl.indexOf(",");
+        if (!dataUrl.startsWith("data:") || commaIndex === -1) {
+            throw new Error("无法解析 data URL。");
+        }
+        const metadata = dataUrl.slice(5, commaIndex);
+        const payload = dataUrl.slice(commaIndex + 1);
+        const isBase64 = /;base64/i.test(metadata);
+        const mimeType = (metadata.split(";")[0] || "application/octet-stream").trim();
+        if (isBase64) {
+            return {
+                mimeType,
+                bytes: binaryStringToUint8Array(atob(payload)),
+            };
+        }
+        return {
+            mimeType,
+            bytes: stringToUtf8Bytes(decodeURIComponent(payload)),
+        };
+    }
+    function requestPageFetch(url) {
+        return new Promise((resolve, reject) => {
+            const requestId = `cge-page-fetch-${Date.now()}-${pageFetchSequence + 1}`;
+            pageFetchSequence += 1;
+            const timer = window.setTimeout(() => {
+                pendingPageFetches.delete(requestId);
+                reject(new Error("页面上下文下载超时。"));
+            }, 20000);
+            pendingPageFetches.set(requestId, {
+                resolve: (payload) => {
+                    window.clearTimeout(timer);
+                    resolve(payload);
+                },
+            });
+            window.postMessage({
+                source: "cge-content-script",
+                type: PAGE_FETCH_REQUEST_TYPE,
+                requestId,
+                url,
+            }, window.location.origin);
+        });
+    }
+    function stringToUtf8Bytes(value) {
+        return new TextEncoder().encode(value);
+    }
+    function concatBytes(chunks) {
+        const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const output = new Uint8Array(totalLength);
+        let offset = 0;
+        chunks.forEach((chunk) => {
+            output.set(chunk, offset);
+            offset += chunk.length;
+        });
+        return output;
+    }
+    function uint16Bytes(value) {
+        const bytes = new Uint8Array(2);
+        new DataView(bytes.buffer).setUint16(0, value & 0xffff, true);
+        return bytes;
+    }
+    function uint32Bytes(value) {
+        const bytes = new Uint8Array(4);
+        new DataView(bytes.buffer).setUint32(0, value >>> 0, true);
+        return bytes;
+    }
+    function buildBinaryDataUrl(bytes, mimeType) {
+        return `data:${mimeType};base64,${bytesToBase64(bytes)}`;
+    }
+    function requestBrowserDownloadBytes(filename, bytes, mimeType) {
+        return requestBrowserDownloadUrl(filename, buildBinaryDataUrl(bytes, mimeType));
+    }
+    function buildCrc32Table() {
+        const table = new Uint32Array(256);
+        for (let index = 0; index < 256; index += 1) {
+            let current = index;
+            for (let bit = 0; bit < 8; bit += 1) {
+                current = (current & 1) !== 0 ? 0xedb88320 ^ (current >>> 1) : current >>> 1;
+            }
+            table[index] = current >>> 0;
+        }
+        return table;
+    }
+    const CRC32_TABLE = buildCrc32Table();
+    function crc32(bytes) {
+        let value = 0xffffffff;
+        for (let index = 0; index < bytes.length; index += 1) {
+            value = CRC32_TABLE[(value ^ bytes[index]) & 0xff] ^ (value >>> 8);
+        }
+        return (value ^ 0xffffffff) >>> 0;
+    }
+    function getDosDateTime(date) {
+        const safeDate = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+        const year = Math.max(1980, safeDate.getFullYear());
+        const month = safeDate.getMonth() + 1;
+        const day = safeDate.getDate();
+        const hours = safeDate.getHours();
+        const minutes = safeDate.getMinutes();
+        const seconds = Math.floor(safeDate.getSeconds() / 2);
+        return {
+            dosDate: ((year - 1980) << 9) | (month << 5) | day,
+            dosTime: (hours << 11) | (minutes << 5) | seconds,
+        };
+    }
+    function getFileExtensionFromMimeType(mimeType) {
+        const lower = (mimeType || "").toLowerCase();
+        const map = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/gif": "gif",
+            "image/webp": "webp",
+            "image/svg+xml": "svg",
+            "application/pdf": "pdf",
+            "application/msword": "doc",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+            "application/vnd.ms-excel": "xls",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+            "application/vnd.ms-powerpoint": "ppt",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+            "application/json": "json",
+            "text/markdown": "md",
+            "text/plain": "txt",
+            "text/csv": "csv",
+            "application/zip": "zip",
+        };
+        return map[lower] || "";
+    }
+    function getFileExtensionFromName(value) {
+        const match = (value || "").match(/\.([a-z0-9]{1,10})(?:$|[?#])/i);
+        return match ? match[1].toLowerCase() : "";
+    }
+    function getExpectedAssetExtension(asset) {
+        if (!asset) {
+            return "";
+        }
+        return (getFileExtensionFromName(asset.filename || "") ||
+            getFileExtensionFromName(asset.url || "") ||
+            getFileExtensionFromMimeType(asset.mimeType || "") ||
+            "").toLowerCase();
+    }
+    function ensureAssetPayloadMatchesExpectation(asset, payload, resolvedMimeType) {
+        if (!asset || asset.kind !== "file") {
+            return;
+        }
+        const expectedExtension = getExpectedAssetExtension(asset);
+        if (!expectedExtension) {
+            return;
+        }
+        const actualExtension = (getFileExtensionFromName((payload && payload.filename) || "") ||
+            getFileExtensionFromMimeType(resolvedMimeType || "") ||
+            getFileExtensionFromName((asset && asset.url) || "") ||
+            "").toLowerCase();
+        if (!actualExtension) {
+            return;
+        }
+        if (expectedExtension !== actualExtension) {
+            throw new Error(`附件类型不匹配：期望 .${expectedExtension}，实际得到 .${actualExtension}`);
+        }
+    }
+    function ensureFileExtension(filename, extension) {
+        const cleanExtension = (extension || "").replace(/^\./, "").toLowerCase();
+        if (!cleanExtension) {
+            return filename;
+        }
+        if (getFileExtensionFromName(filename) === cleanExtension) {
+            return filename;
+        }
+        return `${filename}.${cleanExtension}`;
+    }
+    function createUniquePath(path, usedPaths) {
+        if (!usedPaths.has(path)) {
+            usedPaths.add(path);
+            return path;
+        }
+        const lastSlash = path.lastIndexOf("/");
+        const directory = lastSlash >= 0 ? path.slice(0, lastSlash + 1) : "";
+        const name = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
+        const extension = getFileExtensionFromName(name);
+        const baseName = extension ? name.slice(0, -(extension.length + 1)) : name;
+        let attempt = 2;
+        while (true) {
+            const candidateName = extension ? `${baseName}-${attempt}.${extension}` : `${baseName}-${attempt}`;
+            const candidatePath = `${directory}${candidateName}`;
+            if (!usedPaths.has(candidatePath)) {
+                usedPaths.add(candidatePath);
+                return candidatePath;
+            }
+            attempt += 1;
+        }
+    }
+    function parseContentDispositionFilename(header) {
+        if (!header) {
+            return "";
+        }
+        const utf8Match = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+        if (utf8Match) {
+            try {
+                return decodeURIComponent(utf8Match[1].trim());
+            }
+            catch {
+                return utf8Match[1].trim();
+            }
+        }
+        const quotedMatch = header.match(/filename\s*=\s*"([^"]+)"/i);
+        if (quotedMatch) {
+            return quotedMatch[1].trim();
+        }
+        const plainMatch = header.match(/filename\s*=\s*([^;]+)/i);
+        return plainMatch ? plainMatch[1].trim() : "";
+    }
+    function extractFileIdHintsFromText(value) {
+        if (typeof value !== "string") {
+            return [];
+        }
+        return Array.from(new Set(extractFileIds(value)));
+    }
+    function getResourceEntryNames() {
+        return new Set(performance
+            .getEntriesByType("resource")
+            .map((entry) => entry && typeof entry.name === "string" ? entry.name : "")
+            .filter(Boolean));
+    }
+    function findTurnElement(turnId) {
+        if (!turnId) {
+            return null;
+        }
+        return document.querySelector(`section[data-testid="${turnId}"]`);
+    }
+    function findAttachmentTrigger(message, asset) {
+        const turn = findTurnElement(message.turnId);
+        if (!(turn instanceof HTMLElement)) {
+            return null;
+        }
+        const filename = normalizeWhitespace(asset.filename || "");
+        const candidates = Array.from(turn.querySelectorAll("button, [role='button'], [aria-label], [title]"));
+        const exact = candidates.find((node) => {
+            if (!(node instanceof HTMLElement)) {
+                return false;
+            }
+            const label = normalizeWhitespace(node.getAttribute("aria-label") || node.getAttribute("title") || node.textContent || "");
+            return Boolean(filename) && label === filename;
+        });
+        if (exact instanceof HTMLElement) {
+            return exact;
+        }
+        const fuzzy = candidates.find((node) => {
+            if (!(node instanceof HTMLElement)) {
+                return false;
+            }
+            const label = normalizeWhitespace(node.getAttribute("aria-label") || node.getAttribute("title") || node.textContent || "");
+            return Boolean(filename) && label.includes(filename);
+        });
+        return fuzzy instanceof HTMLElement ? fuzzy : turn;
+    }
+    function looksLikeDirectDownloadOnlyAsset(asset) {
+        if (!asset || asset.kind !== "file") {
+            return false;
+        }
+        if (asset.url) {
+            return false;
+        }
+        const filename = normalizeWhitespace(asset.filename || "").toLowerCase();
+        return /\.(pdf|docx?|xlsx?|pptx?|csv|zip|rar|7z)$/i.test(filename);
+    }
+    function triggerNativeDownloadElement(trigger) {
+        if (!(trigger instanceof HTMLElement)) {
+            return;
+        }
+        try {
+            trigger.focus();
+        }
+        catch (error) { }
+        ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach((type) => {
+            try {
+                trigger.dispatchEvent(new MouseEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    button: 0,
+                }));
+            }
+            catch (error) { }
+        });
+        try {
+            trigger.click();
+        }
+        catch (error) { }
+    }
+    function primeNativeAttachmentDownloadsFromCurrentDom() {
+        const conversation = collectConversation();
+        if (!conversation || !Array.isArray(conversation.messages)) {
+            return 0;
+        }
+        const clicked = new Set();
+        let count = 0;
+        conversation.messages.forEach((message) => {
+            if (!Array.isArray(message.assets)) {
+                return;
+            }
+            message.assets.forEach((asset) => {
+                if (!looksLikeDirectDownloadOnlyAsset(asset)) {
+                    return;
+                }
+                const dedupeKey = `${message.turnId || message.id}:${asset.filename || ""}`;
+                if (clicked.has(dedupeKey)) {
+                    return;
+                }
+                const trigger = findAttachmentTrigger(message, asset);
+                if (!(trigger instanceof HTMLElement)) {
+                    return;
+                }
+                clicked.add(dedupeKey);
+                primedNativeAssetKeys.add(buildAssetTrackingKey(message, asset));
+                triggerNativeDownloadElement(trigger);
+                count += 1;
+            });
+        });
+        return count;
+    }
+    function looksLikeAssetRequestUrl(url, fileIdHints) {
+        if (typeof url !== "string" || !url) {
+            return false;
+        }
+        const lower = url.toLowerCase();
+        if (lower.includes("/backend-api/files/library")) {
+            return false;
+        }
+        if (lower.startsWith("blob:")) {
+            return true;
+        }
+        if (lower.includes("/backend-api/estuary/content") ||
+            lower.includes("/backend-api/files/") ||
+            lower.includes("/download") ||
+            lower.includes("/attachment") ||
+            lower.includes("/asset")) {
+            return true;
+        }
+        return fileIdHints.some((hint) => lower.includes(hint.toLowerCase()));
+    }
+    function buildBackendFileDownloadUrl(fileId) {
+        const normalized = typeof fileId === "string" ? fileId.trim() : "";
+        if (!normalized) {
+            return "";
+        }
+        return `${window.location.origin}/backend-api/files/download/${normalized}?post_id=&inline=false`;
+    }
+    function isDirectFileDownloadUrl(url) {
+        return typeof url === "string" && /\/backend-api\/files\/download\/file_/i.test(url);
+    }
+    function isCompatibleFileCardUrl(candidateUrl, expectedFilename, fileIdHints) {
+        const normalizedUrl = normalizeAssetUrl(candidateUrl);
+        if (!looksLikeStaticAssetUrl(normalizedUrl)) {
+            return false;
+        }
+        const expectedExtension = getFileExtensionFromName(expectedFilename || "");
+        if (!expectedExtension) {
+            return true;
+        }
+        if (isDirectFileDownloadUrl(normalizedUrl)) {
+            return true;
+        }
+        const lower = normalizedUrl.toLowerCase();
+        const normalizedName = normalizeWhitespace(expectedFilename || "").toLowerCase();
+        if (normalizedName && lower.includes(normalizedName)) {
+            return true;
+        }
+        const matchedFileId = Array.isArray(fileIdHints)
+            ? fileIdHints.some((hint) => lower.includes(String(hint || "").toLowerCase()))
+            : false;
+        if (matchedFileId) {
+            return true;
+        }
+        const candidateExtension = getFileExtensionFromName(normalizedUrl) || getFileExtensionFromMimeType(inferMimeTypeFromUrl(normalizedUrl));
+        if (candidateExtension) {
+            return candidateExtension.toLowerCase() === expectedExtension.toLowerCase();
+        }
+        if (/^(pdf|doc|docx|xls|xlsx|ppt|pptx|csv|zip|rar|7z)$/i.test(expectedExtension) &&
+            lower.includes("/backend-api/estuary/content")) {
+            return false;
+        }
+        return false;
+    }
+    function findCapturedAssetUrl(sinceTs, filename, fileIdHints) {
+        const normalizedFileName = normalizeWhitespace(filename || "").toLowerCase();
+        for (let index = pageNetworkEvents.length - 1; index >= 0; index -= 1) {
+            const entry = pageNetworkEvents[index];
+            if (!entry || entry.ts < sinceTs) {
+                continue;
+            }
+            const urls = Array.from(new Set([entry.url, ...(entry.urls || [])])).filter(Boolean);
+            const fileIdMatched = Array.isArray(entry.fileIds)
+                ? entry.fileIds.some((id) => fileIdHints.some((hint) => hint.toLowerCase() === id.toLowerCase()))
+                : false;
+            const fileNameMatched = Array.isArray(entry.fileNames)
+                ? entry.fileNames.some((name) => normalizeWhitespace(name).toLowerCase() === normalizedFileName)
+                : false;
+            const synthesizedUrl = fileNameMatched && Array.isArray(entry.fileIds) && entry.fileIds.length === 1
+                ? buildBackendFileDownloadUrl(entry.fileIds[0])
+                : "";
+            const exactDownloadUrl = urls.find((candidate) => isDirectFileDownloadUrl(candidate));
+            if (exactDownloadUrl && (fileNameMatched || fileIdMatched || sinceTs > 0)) {
+                return exactDownloadUrl;
+            }
+            const matchedUrl = urls.find((candidate) => {
+                const lower = candidate.toLowerCase();
+                const urlFileIdMatched = fileIdHints.some((hint) => lower.includes(hint.toLowerCase()));
+                const urlFileNameMatched = normalizedFileName ? lower.includes(normalizedFileName) : false;
+                if (urlFileIdMatched || urlFileNameMatched) {
+                    return true;
+                }
+                if (isDirectFileDownloadUrl(candidate) && (fileNameMatched || fileIdMatched)) {
+                    return true;
+                }
+                return false;
+            });
+            const directDownloadReason = entry.reason === "anchor-click" ||
+                entry.reason === "window-open" ||
+                entry.reason === "create-object-url";
+            if (matchedUrl && (fileIdMatched || fileNameMatched || (directDownloadReason && normalizedFileName && fileNameMatched))) {
+                return matchedUrl;
+            }
+            if (synthesizedUrl && (fileNameMatched || fileIdMatched)) {
+                return synthesizedUrl;
+            }
+        }
+        return "";
+    }
+    async function tryResolveAssetUrlViaInteraction(message, asset) {
+        const trigger = findAttachmentTrigger(message, asset);
+        if (!(trigger instanceof HTMLElement)) {
+            return "";
+        }
+        const beforeResources = getResourceEntryNames();
+        const beforeDirectUrl = findDirectAssetUrl(trigger.closest("section") || trigger);
+        if (beforeDirectUrl) {
+            return beforeDirectUrl;
+        }
+        const fileIdHints = extractFileIdHintsFromText(asset.error || "");
+        const networkStartTs = Date.now();
+        triggerNativeDownloadElement(trigger);
+        for (let attempt = 0; attempt < 12; attempt += 1) {
+            await delay(250);
+            const scopedUrl = findDirectAssetUrl(trigger.closest("section") || trigger);
+            if (scopedUrl) {
+                return scopedUrl;
+            }
+            const documentUrl = findDirectAssetUrl(document.body);
+            if (documentUrl && looksLikeAssetRequestUrl(documentUrl, fileIdHints)) {
+                return documentUrl;
+            }
+            const capturedUrl = findCapturedAssetUrl(networkStartTs, asset.filename, fileIdHints);
+            if (capturedUrl) {
+                return capturedUrl;
+            }
+            const afterResources = getResourceEntryNames();
+            const nextUrl = Array.from(afterResources).find((name) => !beforeResources.has(name) && looksLikeAssetRequestUrl(name, fileIdHints));
+            if (nextUrl) {
+                return nextUrl;
+            }
+        }
+        return "";
+    }
+    function buildZip(entries) {
+        if (!entries.length) {
+            throw new Error("没有可写入 ZIP 的文件。");
+        }
+        const localParts = [];
+        const centralParts = [];
+        let offset = 0;
+        entries.forEach((entry) => {
+            const pathBytes = stringToUtf8Bytes(entry.path);
+            const fileBytes = entry.bytes;
+            const checksum = crc32(fileBytes);
+            const { dosDate, dosTime } = getDosDateTime(entry.modifiedAt);
+            const localHeader = new Uint8Array(30 + pathBytes.length);
+            const localView = new DataView(localHeader.buffer);
+            localView.setUint32(0, 0x04034b50, true);
+            localView.setUint16(4, 20, true);
+            localView.setUint16(6, 0, true);
+            localView.setUint16(8, 0, true);
+            localView.setUint16(10, dosTime, true);
+            localView.setUint16(12, dosDate, true);
+            localView.setUint32(14, checksum, true);
+            localView.setUint32(18, fileBytes.length, true);
+            localView.setUint32(22, fileBytes.length, true);
+            localView.setUint16(26, pathBytes.length, true);
+            localView.setUint16(28, 0, true);
+            localHeader.set(pathBytes, 30);
+            localParts.push(localHeader, fileBytes);
+            const centralHeader = new Uint8Array(46 + pathBytes.length);
+            const centralView = new DataView(centralHeader.buffer);
+            centralView.setUint32(0, 0x02014b50, true);
+            centralView.setUint16(4, 20, true);
+            centralView.setUint16(6, 20, true);
+            centralView.setUint16(8, 0, true);
+            centralView.setUint16(10, 0, true);
+            centralView.setUint16(12, dosTime, true);
+            centralView.setUint16(14, dosDate, true);
+            centralView.setUint32(16, checksum, true);
+            centralView.setUint32(20, fileBytes.length, true);
+            centralView.setUint32(24, fileBytes.length, true);
+            centralView.setUint16(28, pathBytes.length, true);
+            centralView.setUint16(30, 0, true);
+            centralView.setUint16(32, 0, true);
+            centralView.setUint16(34, 0, true);
+            centralView.setUint16(36, 0, true);
+            centralView.setUint32(38, 0, true);
+            centralView.setUint32(42, offset, true);
+            centralHeader.set(pathBytes, 46);
+            centralParts.push(centralHeader);
+            offset += localHeader.length + fileBytes.length;
+        });
+        const centralDirectory = concatBytes(centralParts);
+        const localData = concatBytes(localParts);
+        const endRecord = concatBytes([
+            uint32Bytes(0x06054b50),
+            uint16Bytes(0),
+            uint16Bytes(0),
+            uint16Bytes(entries.length),
+            uint16Bytes(entries.length),
+            uint32Bytes(centralDirectory.length),
+            uint32Bytes(localData.length),
+            uint16Bytes(0),
+        ]);
+        return concatBytes([localData, centralDirectory, endRecord]);
+    }
+    async function fetchAssetPayload(url) {
+        if (!url) {
+            throw new Error("附件地址为空。");
+        }
+        if (url.startsWith("data:")) {
+            return parseDataUrl(url);
+        }
+        const response = await fetch(url, {
+            credentials: "include",
+        });
+        if (!response.ok) {
+            const pagePayload = await requestPageFetch(url).catch(() => null);
+            if (pagePayload && pagePayload.ok === true && typeof pagePayload.base64 === "string") {
+                return {
+                    bytes: binaryStringToUint8Array(atob(pagePayload.base64)),
+                    mimeType: (pagePayload.mimeType || "").trim(),
+                    filename: parseContentDispositionFilename(pagePayload.contentDisposition || ""),
+                };
+            }
+            const pageError = pagePayload && pagePayload.ok === false && pagePayload.error
+                ? `；页面上下文下载失败：${pagePayload.error}`
+                : "";
+            throw new Error(`下载失败：HTTP ${response.status}${pageError}`);
+        }
+        return {
+            bytes: new Uint8Array(await response.arrayBuffer()),
+            mimeType: (response.headers.get("content-type") || "").split(";")[0].trim(),
+            filename: parseContentDispositionFilename(response.headers.get("content-disposition") || ""),
+        };
+    }
+    async function buildConversationZip(conversation) {
+        const clonedConversation = JSON.parse(JSON.stringify(conversation));
+        const usedPaths = new Set(["conversation.json", "conversation.md", "bundle-manifest.json"]);
+        const assetFetchCache = new Map();
+        const assetEntries = [];
+        const assetRecords = [];
+        const conversationTitle = clonedConversation.metadata.title || "chatgpt-conversation";
+        const totalAssets = clonedConversation.messages.reduce((count, message) => {
+            return count + (Array.isArray(message.assets) ? message.assets.length : 0);
+        }, 0);
+        let processedAssets = 0;
+        let downloadedAssets = 0;
+        let browserQueuedAssets = 0;
+        for (const message of clonedConversation.messages) {
+            if (!Array.isArray(message.assets) || !message.assets.length) {
+                continue;
+            }
+            for (let assetIndex = 0; assetIndex < message.assets.length; assetIndex += 1) {
+                const asset = message.assets[assetIndex];
+                const assetTrackingKey = buildAssetTrackingKey(message, asset);
+                processedAssets += 1;
+                setStatus(`正在打包附件 ${processedAssets}/${totalAssets}…`, "muted");
+                if (!asset.url) {
+                    const capturedUrl = findCapturedAssetUrl(0, asset.filename, extractFileIdHintsFromText(asset.error || ""));
+                    if (capturedUrl) {
+                        asset.url = capturedUrl;
+                        asset.mimeType = asset.mimeType || inferMimeTypeFromUrl(capturedUrl);
+                    }
+                }
+                if (!asset.url) {
+                    const resolvedUrl = await tryResolveAssetUrlViaInteraction(message, asset);
+                    if (resolvedUrl) {
+                        asset.url = resolvedUrl;
+                        asset.mimeType = asset.mimeType || inferMimeTypeFromUrl(resolvedUrl);
+                    }
+                }
+                if (!asset.url) {
+                    if (looksLikeDirectDownloadOnlyAsset(asset) && primedNativeAssetKeys.has(assetTrackingKey)) {
+                        asset.error =
+                            asset.error ||
+                                "已尝试触发文件卡片下载，但没有捕获到可复用的下载地址。";
+                    }
+                    asset.downloadStatus = "failed";
+                    asset.error = asset.error || "No direct download URL was found in the DOM.";
+                    delete asset.zipPath;
+                    assetRecords.push({
+                        messageId: message.id,
+                        role: message.role,
+                        sourceUrl: "",
+                        filename: asset.filename || "",
+                        mimeType: asset.mimeType || "",
+                        status: "failed",
+                        error: asset.error,
+                    });
+                    continue;
+                }
+                asset.downloadStatus = "pending";
+                try {
+                    if (!assetFetchCache.has(asset.url)) {
+                        assetFetchCache.set(asset.url, fetchAssetPayload(asset.url));
+                    }
+                    const payload = await assetFetchCache.get(asset.url);
+                    const resolvedMimeType = payload.mimeType || asset.mimeType || inferMimeTypeFromUrl(asset.url) || "application/octet-stream";
+                    ensureAssetPayloadMatchesExpectation(asset, payload, resolvedMimeType);
+                    const extension = getFileExtensionFromName(payload.filename || "") ||
+                        getFileExtensionFromName(asset.filename || "") ||
+                        getFileExtensionFromName(asset.url) ||
+                        getFileExtensionFromMimeType(resolvedMimeType) ||
+                        (asset.kind === "image" ? "bin" : "bin");
+                    const preferredName = payload.filename ||
+                        asset.filename ||
+                        fileNameFromUrl(asset.url) ||
+                        `${message.role}-${message.index}-${asset.kind}-${assetIndex + 1}`;
+                    const finalName = ensureFileExtension(sanitizeFileName(preferredName), extension);
+                    const zipPath = createUniquePath(`assets/${String(processedAssets).padStart(3, "0")}-${finalName}`, usedPaths);
+                    asset.filename = finalName;
+                    asset.mimeType = resolvedMimeType;
+                    asset.zipPath = zipPath;
+                    asset.downloadStatus = "downloaded";
+                    delete asset.error;
+                    assetEntries.push({
+                        path: zipPath,
+                        bytes: payload.bytes,
+                    });
+                    assetRecords.push({
+                        messageId: message.id,
+                        role: message.role,
+                        sourceUrl: asset.url,
+                        zipPath,
+                        filename: finalName,
+                        mimeType: resolvedMimeType,
+                        status: "downloaded",
+                    });
+                    downloadedAssets += 1;
+                }
+                catch (error) {
+                    const messageText = error instanceof Error ? error.message : "未知错误";
+                    const shouldQueueBrowserDownload = Boolean(asset.url) && /HTTP 401|HTTP 403/i.test(messageText);
+                    if (shouldQueueBrowserDownload) {
+                        try {
+                            const queued = await queueBrowserAssetDownload(conversationTitle, asset, browserQueuedAssets);
+                            asset.filename = queued.filename;
+                            asset.downloadStatus = "browser-download-queued";
+                            asset.error = `ZIP 打包读取失败，已改由浏览器原生下载保存到：${queued.downloadPath}`;
+                            delete asset.zipPath;
+                            assetRecords.push({
+                                messageId: message.id,
+                                role: message.role,
+                                sourceUrl: asset.url,
+                                filename: queued.filename,
+                                mimeType: asset.mimeType || "",
+                                status: "browser-download-queued",
+                                browserDownloadPath: queued.downloadPath,
+                                browserDownloadId: queued.downloadId,
+                                error: messageText,
+                            });
+                            browserQueuedAssets += 1;
+                            continue;
+                        }
+                        catch (downloadError) {
+                            const browserMessage = downloadError instanceof Error ? downloadError.message : "浏览器下载请求失败。";
+                            asset.downloadStatus = "failed";
+                            asset.error = `${messageText}；浏览器原生下载失败：${browserMessage}`;
+                            delete asset.zipPath;
+                            assetRecords.push({
+                                messageId: message.id,
+                                role: message.role,
+                                sourceUrl: asset.url,
+                                filename: asset.filename || "",
+                                mimeType: asset.mimeType || "",
+                                status: "failed",
+                                error: asset.error,
+                            });
+                            continue;
+                        }
+                    }
+                    asset.downloadStatus = "failed";
+                    asset.error = messageText;
+                    delete asset.zipPath;
+                    assetRecords.push({
+                        messageId: message.id,
+                        role: message.role,
+                        sourceUrl: asset.url,
+                        filename: asset.filename || "",
+                        mimeType: asset.mimeType || "",
+                        status: "failed",
+                        error: messageText,
+                    });
+                }
+            }
+        }
+        const bundleManifest = {
+            generatedAt: new Date().toISOString(),
+            title: clonedConversation.metadata.title,
+            url: clonedConversation.metadata.url,
+            messageCount: clonedConversation.metadata.messageCount,
+            assetCount: totalAssets,
+            downloadedAssetCount: downloadedAssets,
+            browserDownloadQueuedCount: browserQueuedAssets,
+            failedAssetCount: totalAssets - downloadedAssets - browserQueuedAssets,
+            assets: assetRecords,
+        };
+        const zipBytes = buildZip([
+            {
+                path: "conversation.json",
+                bytes: stringToUtf8Bytes(JSON.stringify(clonedConversation, null, 2)),
+            },
+            {
+                path: "conversation.md",
+                bytes: stringToUtf8Bytes(toMarkdown(clonedConversation)),
+            },
+            {
+                path: "bundle-manifest.json",
+                bytes: stringToUtf8Bytes(JSON.stringify(bundleManifest, null, 2)),
+            },
+            ...assetEntries,
+        ]);
+        return {
+            bytes: zipBytes,
+            assetCount: totalAssets,
+            downloadedAssetCount: downloadedAssets,
+            browserDownloadQueuedCount: browserQueuedAssets,
+            failedAssetCount: totalAssets - downloadedAssets - browserQueuedAssets,
+        };
     }
     function wrapCanvasText(context, text, maxWidth) {
         if (!text) {
@@ -1851,7 +3226,7 @@
         const pdfBytes = buildPdfFromImages(pages);
         return `data:application/pdf;base64,${bytesToBase64(pdfBytes)}`;
     }
-    function requestBrowserDownloadUrl(filename, url) {
+    function requestBrowserDownloadUrl(filename, url, options) {
         const runtime = typeof chrome !== "undefined" ? chrome.runtime : null;
         if (!runtime || typeof runtime.sendMessage !== "function") {
             throw new Error("扩展运行时不可用，无法触发浏览器下载。");
@@ -1861,6 +3236,8 @@
                 type: "cge-download",
                 filename,
                 url,
+                saveAs: options && typeof options.saveAs === "boolean" ? options.saveAs : true,
+                conflictAction: options && typeof options.conflictAction === "string" ? options.conflictAction : "uniquify",
             }, (response) => {
                 if (chrome.runtime.lastError) {
                     reject(new Error(chrome.runtime.lastError.message || "下载请求失败。"));
@@ -1877,13 +3254,43 @@
     function requestBrowserDownload(filename, content, mimeType) {
         return requestBrowserDownloadUrl(filename, buildDataUrl(content, mimeType));
     }
+    function buildBrowserDownloadPath(conversationTitle, filename, index) {
+        const safeTitle = sanitizeFileName(conversationTitle || "chatgpt-conversation");
+        const safeFileName = sanitizeFileName(filename || `attachment-${index + 1}`);
+        return `${safeTitle} attachments/${String(index + 1).padStart(3, "0")}-${safeFileName}`;
+    }
+    async function queueBrowserAssetDownload(conversationTitle, asset, index) {
+        if (!asset.url) {
+            throw new Error("附件地址为空。");
+        }
+        const filename = asset.filename ||
+            fileNameFromUrl(asset.url) ||
+            `attachment-${index + 1}${getFileExtensionFromMimeType(asset.mimeType || "") ? `.${getFileExtensionFromMimeType(asset.mimeType || "")}` : ""}`;
+        const downloadPath = buildBrowserDownloadPath(conversationTitle, filename, index);
+        const response = await requestBrowserDownloadUrl(downloadPath, asset.url, {
+            saveAs: false,
+            conflictAction: "uniquify",
+        });
+        return {
+            downloadId: response && response.downloadId ? response.downloadId : null,
+            downloadPath,
+            filename,
+        };
+    }
     async function runExport(format) {
         if (exportInFlight) {
             return;
         }
         exportInFlight = true;
         setExportButtonsDisabled(true);
-        setStatus("正在向上滚动补齐历史…", "muted");
+        let primedNativeDownloads = 0;
+        if (format === "zip") {
+            primedNativeAssetKeys.clear();
+            primedNativeDownloads = primeNativeAttachmentDownloadsFromCurrentDom();
+        }
+        setStatus(primedNativeDownloads > 0
+            ? `已触发 ${primedNativeDownloads} 个附件的浏览器原生下载，正在向上滚动补齐历史…`
+            : "正在向上滚动补齐历史…", "muted");
         try {
             const historyResult = await ensureFullHistoryLoaded();
             latestConversation = collectConversation();
@@ -1901,6 +3308,23 @@
                 await requestBrowserDownloadUrl(filename, pdfUrl);
                 const note = historyResult.strategy === "scroll-up" ? "，已尝试补齐历史" : "";
                 setStatus(`导出完成：${filename}${note}`, "success");
+                return;
+            }
+            if (format === "zip") {
+                const filename = `${cleanConversationTitle()}.zip`;
+                setStatus("正在整理 ZIP 导出内容…", "muted");
+                const zipResult = await buildConversationZip(conversation);
+                setStatus("正在请求浏览器保存 ZIP…", "muted");
+                await requestBrowserDownloadBytes(filename, zipResult.bytes, "application/zip");
+                const note = historyResult.strategy === "scroll-up" ? "，已尝试补齐历史" : "";
+                const assetNote = zipResult.assetCount > 0
+                    ? `，附件 ${zipResult.downloadedAssetCount}/${zipResult.assetCount} 已打包`
+                    : "，当前所选消息没有可打包附件";
+                const browserNote = zipResult.browserDownloadQueuedCount > 0
+                    ? `，${zipResult.browserDownloadQueuedCount} 个附件已改为浏览器原生下载`
+                    : "";
+                const failedNote = zipResult.failedAssetCount > 0 ? `，${zipResult.failedAssetCount} 个附件下载失败` : "";
+                setStatus(`导出完成：${filename}${note}${assetNote}${browserNote}${failedNote}`, "success");
                 return;
             }
             const extension = format === "json" ? "json" : "md";
@@ -1922,6 +3346,8 @@
         }
     }
     function start() {
+        installPageHookBridge();
+        injectPageHook();
         ensurePanel();
         ensureToolbar();
         ensureTimelinePanel();

@@ -1,12 +1,26 @@
-export type ExportFormat = "json" | "markdown" | "pdf" | "image";
+export type ExportFormat = "json" | "markdown" | "pdf" | "image" | "zip";
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
+
+export type ExportAssetKind = "image" | "file";
+
+export interface ExportAsset {
+  kind: ExportAssetKind;
+  url: string;
+  filename?: string;
+  mimeType?: string;
+  alt?: string;
+  zipPath?: string;
+  downloadStatus?: "pending" | "downloaded" | "browser-download-queued" | "failed";
+  error?: string;
+}
 
 export interface ConversationMessage {
   id: string;
   role: MessageRole;
   text: string;
   html?: string;
+  assets?: ExportAsset[];
   hostSelectorHint?: string;
 }
 
