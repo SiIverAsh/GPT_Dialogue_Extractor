@@ -78,6 +78,8 @@
     let timelineRefreshTimer = 0;
     let lastSelectionSignature = "";
     let lastTimelineSignature = "";
+    let historyPrimedCacheKey = "";
+    let lastHistoryLoadStrategy = "none";
     let timelineLockedMessageId = "";
     let timelineLockedUntil = 0;
     let timelineDirectoryExpanded = false;
@@ -119,6 +121,34 @@
             return "";
         }
         return conversation.messages.map((message) => message.id).join("|");
+    }
+    function getConversationCacheKey(url) {
+        try {
+            const parsed = new URL(url || window.location.href, window.location.href);
+            return `${parsed.origin}${parsed.pathname}`;
+        }
+        catch (error) {
+            void error;
+            return window.location.pathname || String(url || "");
+        }
+    }
+    function getActiveConversationCacheKey() {
+        return getConversationCacheKey(window.location.href);
+    }
+    async function ensureHistoryLoadedOnce(forceReload = false) {
+        const activeCacheKey = getActiveConversationCacheKey();
+        if (!forceReload && historyPrimedCacheKey === activeCacheKey) {
+            return {
+                strategy: lastHistoryLoadStrategy || "none",
+                changedDom: false,
+                reachedBoundary: true,
+                notes: ["History was already loaded for the current conversation."],
+            };
+        }
+        const historyResult = await ensureFullHistoryLoaded();
+        historyPrimedCacheKey = activeCacheKey;
+        lastHistoryLoadStrategy = historyResult && historyResult.strategy ? historyResult.strategy : "none";
+        return historyResult;
     }
     function cleanConversationTitle() {
         const rawTitle = document.title || "chatgpt-conversation";
@@ -797,7 +827,7 @@
         try {
             setStatus("正在读取当前会话消息列表…", "muted");
             if (forceReload || !latestConversation) {
-                await ensureFullHistoryLoaded();
+                await ensureHistoryLoadedOnce(forceReload);
                 latestConversation = collectConversation();
             }
             if (!latestConversation || !latestConversation.messages.length) {
@@ -867,7 +897,7 @@
         timelineInFlight = true;
         try {
             if (forceReload || !latestConversation) {
-                await ensureFullHistoryLoaded();
+                await ensureHistoryLoadedOnce(forceReload);
                 latestConversation = collectConversation();
             }
             if (!latestConversation || !latestConversation.messages.length) {
@@ -3292,7 +3322,7 @@
             ? `已触发 ${primedNativeDownloads} 个附件的浏览器原生下载，正在向上滚动补齐历史…`
             : "正在向上滚动补齐历史…", "muted");
         try {
-            const historyResult = await ensureFullHistoryLoaded();
+            const historyResult = await ensureHistoryLoadedOnce(false);
             latestConversation = collectConversation();
             const conversation = applySelection(latestConversation);
             if (!conversation.messages.length) {
