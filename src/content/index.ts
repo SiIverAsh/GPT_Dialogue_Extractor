@@ -57,8 +57,6 @@
   const CLEAR_ALL_ID = "cge-clear-all";
   const SELECTION_SUMMARY_ID = "cge-selection-summary";
   const MESSAGE_LIST_ID = "cge-message-list";
-  const MAX_HISTORY_ITERATIONS = 80;
-  const STABLE_HISTORY_ROUNDS = 3;
   const TIMELINE_SCROLL_PADDING = 12;
   const TIMELINE_MIN_TOP_CLEARANCE = 96;
   const TIMELINE_ACTIVE_LOCK_MS = 1200;
@@ -81,20 +79,10 @@
   let timelineRefreshTimer = 0;
   let lastSelectionSignature = "";
   let lastTimelineSignature = "";
-  let historyPrimedCacheKey = "";
-  let lastHistoryLoadStrategy = "none";
   let timelineLockedMessageId = "";
   let timelineLockedUntil = 0;
   let timelineDirectoryExpanded = false;
   const documentAssetHintCache = new Map();
-  const pageNetworkEvents = [];
-  const PAGE_HOOK_SOURCE = "cge-page-hook";
-  const PAGE_HOOK_TYPE = "cge-network-event";
-  const PAGE_FETCH_REQUEST_TYPE = "cge-page-fetch-request";
-  const PAGE_FETCH_RESPONSE_TYPE = "cge-page-fetch-response";
-  const MAX_PAGE_NETWORK_EVENTS = 200;
-  let pageFetchSequence = 0;
-  const pendingPageFetches = new Map();
   const primedNativeAssetKeys = new Set();
 
   function delay(ms) {
@@ -134,35 +122,8 @@
     return conversation.messages.map((message) => message.id).join("|");
   }
 
-  function getConversationCacheKey(url) {
-    try {
-      const parsed = new URL(url || window.location.href, window.location.href);
-      return `${parsed.origin}${parsed.pathname}`;
-    } catch (error) {
-      void error;
-      return window.location.pathname || String(url || "");
-    }
-  }
-
-  function getActiveConversationCacheKey() {
-    return getConversationCacheKey(window.location.href);
-  }
-
-  async function ensureHistoryLoadedOnce(forceReload = false) {
-    const activeCacheKey = getActiveConversationCacheKey();
-    if (!forceReload && historyPrimedCacheKey === activeCacheKey) {
-      return {
-        strategy: lastHistoryLoadStrategy || "none",
-        changedDom: false,
-        reachedBoundary: true,
-        notes: ["History was already loaded for the current conversation."],
-      };
-    }
-
-    const historyResult = await ensureFullHistoryLoaded();
-    historyPrimedCacheKey = activeCacheKey;
-    lastHistoryLoadStrategy = historyResult && historyResult.strategy ? historyResult.strategy : "none";
-    return historyResult;
+  function getMessageDisplayName(message) {
+    return `${message.role === "user" ? "user" : "gpt"}${message.index}`;
   }
 
   function cleanConversationTitle() {
@@ -175,65 +136,18 @@
     );
   }
 
-  function rememberPageNetworkEvent(detail) {
-    if (!detail || typeof detail !== "object") {
-      return;
-    }
-
-    pageNetworkEvents.push({
-      ts: typeof detail.ts === "number" ? detail.ts : Date.now(),
-      reason: typeof detail.reason === "string" ? detail.reason : "",
-      url: typeof detail.url === "string" ? detail.url : "",
-      urls: Array.isArray(detail.urls) ? detail.urls.filter((value) => typeof value === "string" && value) : [],
-      fileIds: Array.isArray(detail.fileIds) ? detail.fileIds.filter((value) => typeof value === "string" && value) : [],
-      fileNames: Array.isArray(detail.fileNames) ? detail.fileNames.filter((value) => typeof value === "string" && value) : [],
-    });
-
-    if (pageNetworkEvents.length > MAX_PAGE_NETWORK_EVENTS) {
-      pageNetworkEvents.splice(0, pageNetworkEvents.length - MAX_PAGE_NETWORK_EVENTS);
-    }
-  }
-
   function installPageHookBridge() {
-    window.addEventListener("message", (event) => {
-      if (event.source !== window || event.origin !== window.location.origin) {
-        return;
-      }
-
-      const data = event.data;
-      if (!data || data.source !== PAGE_HOOK_SOURCE || data.type !== PAGE_HOOK_TYPE) {
-        if (data && data.source === PAGE_HOOK_SOURCE && data.type === PAGE_FETCH_RESPONSE_TYPE) {
-          const requestId = typeof data.requestId === "string" ? data.requestId : "";
-          if (!requestId || !pendingPageFetches.has(requestId)) {
-            return;
-          }
-
-          const pending = pendingPageFetches.get(requestId);
-          pendingPageFetches.delete(requestId);
-          pending.resolve(data);
-        }
-        return;
-      }
-
-      rememberPageNetworkEvent(data);
-    });
+    const pageBridge = window.ChatGPTExporterPageBridge;
+    if (pageBridge && typeof pageBridge.install === "function") {
+      pageBridge.install();
+    }
   }
 
   function injectPageHook() {
-    const runtime = typeof chrome !== "undefined" ? chrome.runtime : null;
-    if (!runtime || typeof runtime.getURL !== "function") {
-      return;
+    const pageBridge = window.ChatGPTExporterPageBridge;
+    if (pageBridge && typeof pageBridge.inject === "function") {
+      pageBridge.inject();
     }
-
-    if (document.getElementById("cge-page-hook-script")) {
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.id = "cge-page-hook-script";
-    script.src = runtime.getURL("src/content/page-hook.js");
-    script.async = false;
-    (document.head || document.documentElement).appendChild(script);
   }
 
   function createToolbarButton(label, id) {
@@ -377,7 +291,7 @@
       }
       row.setAttribute(
         "aria-label",
-        `选择${message.role === "user" ? "用户" : "助手"}消息 ${message.index}`,
+        `选择${getMessageDisplayName(message)}消息`,
       );
 
       const check = document.createElement("span");
@@ -391,7 +305,7 @@
 
       const title = document.createElement("div");
       title.className = "cge-message-title";
-      title.textContent = `${message.role === "user" ? "用户" : "助手"} ${message.index}`;
+      title.textContent = getMessageDisplayName(message);
 
       const preview = document.createElement("div");
       preview.className = "cge-message-preview";
@@ -745,7 +659,7 @@
 
       const title = document.createElement("div");
       title.className = "cge-timeline-directory-title";
-      title.textContent = `用户 ${message.index}`;
+      title.textContent = getMessageDisplayName(message);
 
       const preview = document.createElement("div");
       preview.className = "cge-timeline-directory-preview";
@@ -767,7 +681,7 @@
       return;
     }
 
-    tooltip.textContent = message.text.slice(0, 180) || `用户消息 ${message.index}`;
+    tooltip.textContent = message.text.slice(0, 180) || `${getMessageDisplayName(message)}消息`;
     const rect = target.getBoundingClientRect();
     tooltip.style.display = "block";
     tooltip.style.top = `${Math.max(16, rect.top - 10)}px`;
@@ -933,7 +847,7 @@
       const item = document.createElement("button");
       item.type = "button";
       item.dataset.messageId = message.id;
-      item.title = message.text.slice(0, 160) || `用户消息 ${message.index}`;
+      item.title = message.text.slice(0, 160) || `${getMessageDisplayName(message)}消息`;
       item.style.position = "absolute";
       item.style.left = "50%";
       item.style.top = `${10 + usableHeight * ratio}px`;
@@ -988,7 +902,6 @@
       setStatus("正在读取当前会话消息列表…", "muted");
 
       if (forceReload || !latestConversation) {
-        await ensureHistoryLoadedOnce(forceReload);
         latestConversation = collectConversation();
       }
 
@@ -1071,7 +984,6 @@
     timelineInFlight = true;
     try {
       if (forceReload || !latestConversation) {
-        await ensureHistoryLoadedOnce(forceReload);
         latestConversation = collectConversation();
       }
 
@@ -1216,7 +1128,7 @@
 
     const description = document.createElement("div");
     description.className = "cge-panel-description";
-    description.textContent = "会先向上滚动补齐历史，再下载 JSON、Markdown、PDF 或 ZIP。";
+    description.textContent = "直接读取当前已加载的对话，再下载 JSON、Markdown、PDF 或 ZIP。";
     description.style.marginTop = "6px";
     description.style.fontSize = "12px";
     description.style.lineHeight = "1.5";
@@ -1419,6 +1331,7 @@
     const observer = new MutationObserver(() => {
       scheduleToolbarInjection();
       requestTimelineRefresh();
+      scheduleFormulaCopyEnhancement();
     });
 
     observer.observe(document.documentElement, {
@@ -1467,93 +1380,6 @@
 
     const scrollingElement = document.scrollingElement;
     return scrollingElement instanceof HTMLElement ? scrollingElement : null;
-  }
-
-  function buildHistoryFingerprint() {
-    const turns = resolveTurns();
-    const firstTurn = turns[0];
-    const lastTurn = turns[turns.length - 1];
-    const firstText = firstTurn ? normalizeWhitespace(firstTurn.innerText).slice(0, 80) : "";
-    const lastText = lastTurn ? normalizeWhitespace(lastTurn.innerText).slice(0, 80) : "";
-
-    return JSON.stringify({
-      count: turns.length,
-      firstId: firstTurn ? firstTurn.getAttribute("data-testid") : null,
-      lastId: lastTurn ? lastTurn.getAttribute("data-testid") : null,
-      firstText,
-      lastText,
-    });
-  }
-
-  function restoreScrollViewport(scrollContainer, initialTop, initialHeight) {
-    const currentHeight = scrollContainer.scrollHeight;
-    const deltaHeight = Math.max(0, currentHeight - initialHeight);
-    scrollContainer.scrollTop = Math.max(0, initialTop + deltaHeight);
-  }
-
-  async function ensureFullHistoryLoaded() {
-    const scrollContainer = resolveScrollContainer();
-    if (!scrollContainer) {
-      return {
-        strategy: "none",
-        changedDom: false,
-        reachedBoundary: true,
-        notes: ["No dedicated scroll container was found. Exporting the currently visible DOM only."],
-      };
-    }
-
-    const initialTop = scrollContainer.scrollTop;
-    const initialHeight = scrollContainer.scrollHeight;
-    let lastFingerprint = buildHistoryFingerprint();
-    let changedDom = false;
-    let stableRounds = 0;
-
-    for (let iteration = 0; iteration < MAX_HISTORY_ITERATIONS; iteration += 1) {
-      const previousTop = scrollContainer.scrollTop;
-      const nextTop = Math.max(0, previousTop - Math.max(480, Math.floor(scrollContainer.clientHeight * 0.9)));
-      scrollContainer.scrollTop = nextTop;
-
-      await delay(450);
-
-      const nextFingerprint = buildHistoryFingerprint();
-      const fingerprintChanged = nextFingerprint !== lastFingerprint;
-
-      if (fingerprintChanged) {
-        changedDom = true;
-        stableRounds = 0;
-        lastFingerprint = nextFingerprint;
-      } else {
-        stableRounds += 1;
-      }
-
-      if (scrollContainer.scrollTop === 0 && stableRounds >= STABLE_HISTORY_ROUNDS) {
-        restoreScrollViewport(scrollContainer, initialTop, initialHeight);
-        return {
-          strategy: "scroll-up",
-          changedDom,
-          reachedBoundary: true,
-          notes: [`History loading stopped after ${iteration + 1} scroll attempts.`],
-        };
-      }
-
-      if (previousTop === nextTop && stableRounds >= STABLE_HISTORY_ROUNDS) {
-        restoreScrollViewport(scrollContainer, initialTop, initialHeight);
-        return {
-          strategy: "scroll-up",
-          changedDom,
-          reachedBoundary: true,
-          notes: ["Scroll position stopped changing before new DOM appeared."],
-        };
-      }
-    }
-
-    restoreScrollViewport(scrollContainer, initialTop, initialHeight);
-    return {
-      strategy: "scroll-up",
-      changedDom,
-      reachedBoundary: false,
-      notes: [`Stopped after reaching the max scroll budget of ${MAX_HISTORY_ITERATIONS} iterations.`],
-    };
   }
 
   function resolveUserBody(turn) {
@@ -1695,6 +1521,27 @@
 
   function isMathInlineNode(node) {
     return isMathRootNode(node) && !isMathBlockNode(node);
+  }
+
+  function getFormulaCopyOptions() {
+    return {
+      getTopLevelMathNodes,
+      extractMathSource,
+    };
+  }
+
+  function installFormulaCopyHandler() {
+    const formulaCopy = window.ChatGPTExporterFormulaCopy;
+    if (formulaCopy && typeof formulaCopy.install === "function") {
+      formulaCopy.install(getFormulaCopyOptions());
+    }
+  }
+
+  function scheduleFormulaCopyEnhancement() {
+    const formulaCopy = window.ChatGPTExporterFormulaCopy;
+    if (formulaCopy && typeof formulaCopy.scheduleEnhancement === "function") {
+      formulaCopy.scheduleEnhancement(getFormulaCopyOptions());
+    }
   }
 
   function serializeMathNode(node, displayMode) {
@@ -2541,24 +2388,6 @@
     return assets;
   }
 
-  function formatAssetMarkdown(asset, index) {
-    const fallback = asset.kind === "image" ? `Image ${index + 1}` : `Attachment ${index + 1}`;
-    const label = sanitizeAssetLabel(asset.filename || asset.alt || "", fallback);
-    const suffix = [];
-
-    if (asset.alt && asset.alt !== label) {
-      suffix.push(`alt: ${asset.alt}`);
-    }
-
-    if (asset.mimeType) {
-      suffix.push(asset.mimeType);
-    }
-
-    const note = suffix.length ? ` (${suffix.join(", ")})` : "";
-    const prefix = asset.kind === "image" ? "- Image" : "- Attachment";
-    return `${prefix}: [${label}](${asset.url})${note}`;
-  }
-
   function collectConversation() {
     const turns = resolveTurns();
     const messages = [];
@@ -2644,54 +2473,38 @@
   }
 
   function toJson(conversation) {
+    const formatters = window.ChatGPTExporterFormatters;
+    if (formatters && typeof formatters.toJson === "function") {
+      return formatters.toJson(conversation);
+    }
+
     return JSON.stringify(conversation, null, 2);
   }
 
   function toMarkdown(conversation) {
-    const lines = [
-      `# ${conversation.metadata.title}`,
-      "",
-      `- Exported At: ${conversation.metadata.exportedAt}`,
-      `- Source: ${conversation.metadata.url}`,
-      `- Message Count: ${conversation.metadata.messageCount}`,
-      "",
-    ];
+    const formatters = window.ChatGPTExporterFormatters;
+    if (formatters && typeof formatters.toMarkdown === "function") {
+      return formatters.toMarkdown(conversation);
+    }
 
-    conversation.messages.forEach((message) => {
-      const heading = `${message.role === "user" ? "User" : "Assistant"} ${message.index}`;
-      lines.push(`## ${heading}`);
-      lines.push("");
-      const body = message.role === "assistant" ? message.markdown : message.text;
-      lines.push(body || "(No text content)");
-      if (Array.isArray(message.assets) && message.assets.length) {
-        lines.push("");
-        lines.push("### Assets");
-        lines.push("");
-        message.assets.forEach((asset, index) => {
-          lines.push(formatAssetMarkdown(asset, index));
-        });
-      }
-      lines.push("");
-    });
-
-    return lines.join("\n").trimEnd() + "\n";
+    throw new Error("Markdown 导出模块未加载。");
   }
 
   function buildDataUrl(content, mimeType) {
+    const downloadBridge = window.ChatGPTExporterDownloadBridge;
+    if (downloadBridge && typeof downloadBridge.buildDataUrl === "function") {
+      return downloadBridge.buildDataUrl(content, mimeType);
+    }
+
     return `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`;
   }
 
-  function bytesToBinaryString(bytes) {
-    let binary = "";
-    const chunkSize = 0x8000;
-    for (let index = 0; index < bytes.length; index += chunkSize) {
-      const chunk = bytes.subarray(index, Math.min(index + chunkSize, bytes.length));
-      binary += String.fromCharCode(...chunk);
-    }
-    return binary;
-  }
-
   function binaryStringToUint8Array(binary) {
+    const binaryUtils = window.ChatGPTExporterBinaryUtils;
+    if (binaryUtils && typeof binaryUtils.binaryStringToUint8Array === "function") {
+      return binaryUtils.binaryStringToUint8Array(binary);
+    }
+
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) {
       bytes[index] = binary.charCodeAt(index) & 0xff;
@@ -2699,147 +2512,49 @@
     return bytes;
   }
 
-  function bytesToBase64(bytes) {
-    return btoa(bytesToBinaryString(bytes));
-  }
-
-  function dataUrlToBytes(dataUrl) {
-    const base64Marker = "base64,";
-    const markerIndex = dataUrl.indexOf(base64Marker);
-    if (markerIndex === -1) {
-      throw new Error("无法读取页面图像数据。");
-    }
-
-    const base64 = dataUrl.slice(markerIndex + base64Marker.length);
-    const binary = atob(base64);
-    return binaryStringToUint8Array(binary);
-  }
-
   function parseDataUrl(dataUrl) {
-    const commaIndex = dataUrl.indexOf(",");
-    if (!dataUrl.startsWith("data:") || commaIndex === -1) {
-      throw new Error("无法解析 data URL。");
+    const binaryUtils = window.ChatGPTExporterBinaryUtils;
+    if (binaryUtils && typeof binaryUtils.parseDataUrl === "function") {
+      return binaryUtils.parseDataUrl(dataUrl);
     }
 
-    const metadata = dataUrl.slice(5, commaIndex);
-    const payload = dataUrl.slice(commaIndex + 1);
-    const isBase64 = /;base64/i.test(metadata);
-    const mimeType = (metadata.split(";")[0] || "application/octet-stream").trim();
-
-    if (isBase64) {
-      return {
-        mimeType,
-        bytes: binaryStringToUint8Array(atob(payload)),
-      };
-    }
-
-    return {
-      mimeType,
-      bytes: stringToUtf8Bytes(decodeURIComponent(payload)),
-    };
+    throw new Error("Data URL 解析模块未加载。");
   }
 
   function requestPageFetch(url) {
-    return new Promise((resolve, reject) => {
-      const requestId = `cge-page-fetch-${Date.now()}-${pageFetchSequence + 1}`;
-      pageFetchSequence += 1;
+    const pageBridge = window.ChatGPTExporterPageBridge;
+    if (pageBridge && typeof pageBridge.requestPageFetch === "function") {
+      return pageBridge.requestPageFetch(url);
+    }
 
-      const timer = window.setTimeout(() => {
-        pendingPageFetches.delete(requestId);
-        reject(new Error("页面上下文下载超时。"));
-      }, 20000);
-
-      pendingPageFetches.set(requestId, {
-        resolve: (payload) => {
-          window.clearTimeout(timer);
-          resolve(payload);
-        },
-      });
-
-      window.postMessage(
-        {
-          source: "cge-content-script",
-          type: PAGE_FETCH_REQUEST_TYPE,
-          requestId,
-          url,
-        },
-        window.location.origin,
-      );
-    });
+    return Promise.resolve({ ok: false, error: "页面上下文下载桥接模块未加载。" });
   }
 
   function stringToUtf8Bytes(value) {
+    const binaryUtils = window.ChatGPTExporterBinaryUtils;
+    if (binaryUtils && typeof binaryUtils.stringToUtf8Bytes === "function") {
+      return binaryUtils.stringToUtf8Bytes(value);
+    }
+
     return new TextEncoder().encode(value);
   }
 
-  function concatBytes(chunks) {
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const output = new Uint8Array(totalLength);
-    let offset = 0;
-
-    chunks.forEach((chunk) => {
-      output.set(chunk, offset);
-      offset += chunk.length;
-    });
-
-    return output;
-  }
-
-  function uint16Bytes(value) {
-    const bytes = new Uint8Array(2);
-    new DataView(bytes.buffer).setUint16(0, value & 0xffff, true);
-    return bytes;
-  }
-
-  function uint32Bytes(value) {
-    const bytes = new Uint8Array(4);
-    new DataView(bytes.buffer).setUint32(0, value >>> 0, true);
-    return bytes;
-  }
-
   function buildBinaryDataUrl(bytes, mimeType) {
-    return `data:${mimeType};base64,${bytesToBase64(bytes)}`;
+    const downloadBridge = window.ChatGPTExporterDownloadBridge;
+    if (downloadBridge && typeof downloadBridge.buildBinaryDataUrl === "function") {
+      return downloadBridge.buildBinaryDataUrl(bytes, mimeType);
+    }
+
+    throw new Error("二进制下载模块未加载。");
   }
 
   function requestBrowserDownloadBytes(filename, bytes, mimeType) {
+    const downloadBridge = window.ChatGPTExporterDownloadBridge;
+    if (downloadBridge && typeof downloadBridge.requestBrowserDownloadBytes === "function") {
+      return downloadBridge.requestBrowserDownloadBytes(filename, bytes, mimeType);
+    }
+
     return requestBrowserDownloadUrl(filename, buildBinaryDataUrl(bytes, mimeType));
-  }
-
-  function buildCrc32Table() {
-    const table = new Uint32Array(256);
-    for (let index = 0; index < 256; index += 1) {
-      let current = index;
-      for (let bit = 0; bit < 8; bit += 1) {
-        current = (current & 1) !== 0 ? 0xedb88320 ^ (current >>> 1) : current >>> 1;
-      }
-      table[index] = current >>> 0;
-    }
-    return table;
-  }
-
-  const CRC32_TABLE = buildCrc32Table();
-
-  function crc32(bytes) {
-    let value = 0xffffffff;
-    for (let index = 0; index < bytes.length; index += 1) {
-      value = CRC32_TABLE[(value ^ bytes[index]) & 0xff] ^ (value >>> 8);
-    }
-    return (value ^ 0xffffffff) >>> 0;
-  }
-
-  function getDosDateTime(date) {
-    const safeDate = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
-    const year = Math.max(1980, safeDate.getFullYear());
-    const month = safeDate.getMonth() + 1;
-    const day = safeDate.getDate();
-    const hours = safeDate.getHours();
-    const minutes = safeDate.getMinutes();
-    const seconds = Math.floor(safeDate.getSeconds() / 2);
-
-    return {
-      dosDate: ((year - 1980) << 9) | (month << 5) | day,
-      dosTime: (hours << 11) | (minutes << 5) | seconds,
-    };
   }
 
   function getFileExtensionFromMimeType(mimeType) {
@@ -3192,6 +2907,9 @@
 
   function findCapturedAssetUrl(sinceTs, filename, fileIdHints) {
     const normalizedFileName = normalizeWhitespace(filename || "").toLowerCase();
+    const pageBridge = window.ChatGPTExporterPageBridge;
+    const pageNetworkEvents =
+      pageBridge && typeof pageBridge.getEvents === "function" ? pageBridge.getEvents() : [];
 
     for (let index = pageNetworkEvents.length - 1; index >= 0; index -= 1) {
       const entry = pageNetworkEvents[index];
@@ -3295,76 +3013,12 @@
   }
 
   function buildZip(entries) {
-    if (!entries.length) {
-      throw new Error("没有可写入 ZIP 的文件。");
+    const binaryUtils = window.ChatGPTExporterBinaryUtils;
+    if (binaryUtils && typeof binaryUtils.buildZip === "function") {
+      return binaryUtils.buildZip(entries);
     }
 
-    const localParts = [];
-    const centralParts = [];
-    let offset = 0;
-
-    entries.forEach((entry) => {
-      const pathBytes = stringToUtf8Bytes(entry.path);
-      const fileBytes = entry.bytes;
-      const checksum = crc32(fileBytes);
-      const { dosDate, dosTime } = getDosDateTime(entry.modifiedAt);
-
-      const localHeader = new Uint8Array(30 + pathBytes.length);
-      const localView = new DataView(localHeader.buffer);
-      localView.setUint32(0, 0x04034b50, true);
-      localView.setUint16(4, 20, true);
-      localView.setUint16(6, 0, true);
-      localView.setUint16(8, 0, true);
-      localView.setUint16(10, dosTime, true);
-      localView.setUint16(12, dosDate, true);
-      localView.setUint32(14, checksum, true);
-      localView.setUint32(18, fileBytes.length, true);
-      localView.setUint32(22, fileBytes.length, true);
-      localView.setUint16(26, pathBytes.length, true);
-      localView.setUint16(28, 0, true);
-      localHeader.set(pathBytes, 30);
-
-      localParts.push(localHeader, fileBytes);
-
-      const centralHeader = new Uint8Array(46 + pathBytes.length);
-      const centralView = new DataView(centralHeader.buffer);
-      centralView.setUint32(0, 0x02014b50, true);
-      centralView.setUint16(4, 20, true);
-      centralView.setUint16(6, 20, true);
-      centralView.setUint16(8, 0, true);
-      centralView.setUint16(10, 0, true);
-      centralView.setUint16(12, dosTime, true);
-      centralView.setUint16(14, dosDate, true);
-      centralView.setUint32(16, checksum, true);
-      centralView.setUint32(20, fileBytes.length, true);
-      centralView.setUint32(24, fileBytes.length, true);
-      centralView.setUint16(28, pathBytes.length, true);
-      centralView.setUint16(30, 0, true);
-      centralView.setUint16(32, 0, true);
-      centralView.setUint16(34, 0, true);
-      centralView.setUint16(36, 0, true);
-      centralView.setUint32(38, 0, true);
-      centralView.setUint32(42, offset, true);
-      centralHeader.set(pathBytes, 46);
-      centralParts.push(centralHeader);
-
-      offset += localHeader.length + fileBytes.length;
-    });
-
-    const centralDirectory = concatBytes(centralParts);
-    const localData = concatBytes(localParts);
-    const endRecord = concatBytes([
-      uint32Bytes(0x06054b50),
-      uint16Bytes(0),
-      uint16Bytes(0),
-      uint16Bytes(entries.length),
-      uint16Bytes(entries.length),
-      uint32Bytes(centralDirectory.length),
-      uint32Bytes(localData.length),
-      uint16Bytes(0),
-    ]);
-
-    return concatBytes([localData, centralDirectory, endRecord]);
+    throw new Error("ZIP 构建模块未加载。");
   }
 
   async function fetchAssetPayload(url) {
@@ -3607,332 +3261,30 @@
     };
   }
 
-  function wrapCanvasText(context, text, maxWidth) {
-    if (!text) {
-      return [""];
-    }
-
-    const lines = [];
-    let current = "";
-    for (const char of text) {
-      const next = current + char;
-      if (current && context.measureText(next).width > maxWidth) {
-        lines.push(current);
-        current = char;
-      } else {
-        current = next;
-      }
-    }
-
-    if (current || !lines.length) {
-      lines.push(current);
-    }
-
-    return lines;
-  }
-
-  function toRenderableBlocks(body) {
-    const source = normalizeWhitespace(body || "").replace(/\r\n/g, "\n");
-    const lines = source.split("\n");
-    const blocks = [];
-    let inCode = false;
-    let buffer = [];
-
-    const pushText = () => {
-      if (!buffer.length) {
-        return;
-      }
-      blocks.push({
-        type: "text",
-        lines: buffer.slice(),
-      });
-      buffer = [];
-    };
-
-    const pushCode = () => {
-      blocks.push({
-        type: "code",
-        lines: buffer.slice(),
-      });
-      buffer = [];
-    };
-
-    lines.forEach((line) => {
-      if (/^```/.test(line.trim())) {
-        if (inCode) {
-          pushCode();
-          inCode = false;
-          return;
-        }
-
-        pushText();
-        inCode = true;
-        buffer = [];
-        return;
-      }
-
-      buffer.push(line);
-    });
-
-    if (buffer.length) {
-      if (inCode) {
-        pushCode();
-      } else {
-        pushText();
-      }
-    }
-
-    if (!blocks.length) {
-      blocks.push({
-        type: "text",
-        lines: [source],
-      });
-    }
-
-    return blocks;
-  }
-
-  function renderConversationPdfPages(conversation) {
-    const pageWidth = 1240;
-    const pageHeight = 1754;
-    const marginX = 84;
-    const marginTop = 92;
-    const marginBottom = 92;
-    const contentWidth = pageWidth - marginX * 2;
-    const pages = [];
-    let canvas = null;
-    let context = null;
-    let y = marginTop;
-
-    const startPage = () => {
-      canvas = document.createElement("canvas");
-      canvas.width = pageWidth;
-      canvas.height = pageHeight;
-      context = canvas.getContext("2d");
-      if (!context) {
-        throw new Error("无法创建 PDF 画布。");
-      }
-
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, pageWidth, pageHeight);
-      context.textBaseline = "top";
-      y = marginTop;
-      pages.push(canvas);
-    };
-
-    const ensureSpace = (height) => {
-      if (!canvas || !context) {
-        startPage();
-      }
-
-      if (y + height <= pageHeight - marginBottom) {
-        return;
-      }
-
-      startPage();
-    };
-
-    const drawWrappedLines = (lines, options) => {
-      const font = options.font;
-      const lineHeight = options.lineHeight;
-      const color = options.color;
-      const background = options.background || "";
-      const insetX = options.insetX || 0;
-      const radius = options.radius || 0;
-
-      context.font = font;
-      context.fillStyle = color;
-
-      lines.forEach((line) => {
-        const wrapped = wrapCanvasText(context, line || " ", contentWidth - insetX * 2);
-        wrapped.forEach((wrappedLine) => {
-          ensureSpace(lineHeight + (background ? 8 : 0));
-          if (background) {
-            context.fillStyle = background;
-            if (radius > 0 && typeof context.roundRect === "function") {
-              context.beginPath();
-              context.roundRect(marginX, y - 2, contentWidth, lineHeight + 8, radius);
-              context.fill();
-            } else {
-              context.fillRect(marginX, y - 2, contentWidth, lineHeight + 8);
-            }
-            context.fillStyle = color;
-          }
-
-          context.fillText(wrappedLine, marginX + insetX, y + (background ? 2 : 0));
-          y += lineHeight + (background ? 8 : 0);
-        });
-      });
-    };
-
-    startPage();
-
-    context.font = '700 30px "Segoe UI", "Microsoft YaHei", sans-serif';
-    context.fillStyle = "#0f172a";
-    drawWrappedLines([conversation.metadata.title], {
-      font: '700 30px "Segoe UI", "Microsoft YaHei", sans-serif',
-      lineHeight: 42,
-      color: "#0f172a",
-    });
-    y += 10;
-
-    drawWrappedLines(
-      [
-        `Exported At: ${conversation.metadata.exportedAt}`,
-        `Source: ${conversation.metadata.url}`,
-        `Message Count: ${conversation.metadata.messageCount}`,
-      ],
-      {
-        font: '400 18px "Segoe UI", "Microsoft YaHei", sans-serif',
-        lineHeight: 28,
-        color: "#475569",
-      },
-    );
-
-    y += 16;
-
-    conversation.messages.forEach((message) => {
-      ensureSpace(54);
-      context.font = '700 20px "Segoe UI", "Microsoft YaHei", sans-serif';
-      context.fillStyle = message.role === "user" ? "#2563eb" : "#0f172a";
-      context.fillText(message.role === "user" ? "用户" : "助手", marginX, y);
-      y += 32;
-
-      const blocks = toRenderableBlocks(message.role === "assistant" ? message.markdown : message.text);
-      blocks.forEach((block, blockIndex) => {
-        if (block.type === "code") {
-          drawWrappedLines(block.lines.length ? block.lines : [""], {
-            font: '400 18px "Cascadia Code", "Consolas", monospace',
-            lineHeight: 24,
-            color: "#0f172a",
-            background: "#f8fafc",
-            insetX: 14,
-            radius: 14,
-          });
-        } else {
-          block.lines.forEach((line, lineIndex) => {
-            if (!line.trim()) {
-              y += 12;
-              return;
-            }
-
-            drawWrappedLines([line], {
-              font: '400 20px "Segoe UI", "Microsoft YaHei", sans-serif',
-              lineHeight: 30,
-              color: "#111827",
-            });
-
-            if (lineIndex < block.lines.length - 1) {
-              y += 2;
-            }
-          });
-        }
-
-        if (blockIndex < blocks.length - 1) {
-          y += 10;
-        }
-      });
-
-      y += 24;
-    });
-
-    return pages.map((pageCanvas) => ({
-      width: pageCanvas.width,
-      height: pageCanvas.height,
-      bytes: dataUrlToBytes(pageCanvas.toDataURL("image/jpeg", 0.9)),
-    }));
-  }
-
-  function buildPdfFromImages(images) {
-    if (!images.length) {
-      throw new Error("没有可写入 PDF 的页面。");
-    }
-
-    const objects = [null, null];
-    const pageIds = [];
-
-    images.forEach((image, index) => {
-      const imageBinary = bytesToBinaryString(image.bytes);
-      const imageObjectId = objects.push(
-        `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.bytes.length} >>\nstream\n${imageBinary}\nendstream`,
-      );
-
-      const imageName = `Im${index + 1}`;
-      const contentStream = `q\n${image.width} 0 0 ${image.height} 0 0 cm\n/${imageName} Do\nQ\n`;
-      const contentObjectId = objects.push(
-        `<< /Length ${contentStream.length} >>\nstream\n${contentStream}endstream`,
-      );
-
-      const pageObjectId = objects.push(
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${image.width} ${image.height}] /Resources << /XObject << /${imageName} ${imageObjectId} 0 R >> >> /Contents ${contentObjectId} 0 R >>`,
-      );
-
-      pageIds.push(pageObjectId);
-    });
-
-    objects[0] = "<< /Type /Catalog /Pages 2 0 R >>";
-    objects[1] = `<< /Type /Pages /Count ${pageIds.length} /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] >>`;
-
-    let output = "%PDF-1.4\n%\xFF\xFF\xFF\xFF\n";
-    const offsets = [0];
-
-    objects.forEach((body, index) => {
-      offsets[index + 1] = output.length;
-      output += `${index + 1} 0 obj\n${body}\nendobj\n`;
-    });
-
-    const xrefOffset = output.length;
-    output += `xref\n0 ${objects.length + 1}\n`;
-    output += "0000000000 65535 f \n";
-
-    for (let index = 1; index <= objects.length; index += 1) {
-      output += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
-    }
-
-    output += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
-    return binaryStringToUint8Array(output);
-  }
-
   function buildConversationPdfDataUrl(conversation) {
-    const pages = renderConversationPdfPages(conversation);
-    const pdfBytes = buildPdfFromImages(pages);
-    return `data:application/pdf;base64,${bytesToBase64(pdfBytes)}`;
+    const pdfExport = window.ChatGPTExporterPdfExport;
+    if (pdfExport && typeof pdfExport.buildConversationPdfDataUrl === "function") {
+      return pdfExport.buildConversationPdfDataUrl(conversation);
+    }
+
+    throw new Error("PDF 导出模块未加载。");
   }
 
   function requestBrowserDownloadUrl(filename, url, options) {
-    const runtime = typeof chrome !== "undefined" ? chrome.runtime : null;
-    if (!runtime || typeof runtime.sendMessage !== "function") {
-      throw new Error("扩展运行时不可用，无法触发浏览器下载。");
+    const downloadBridge = window.ChatGPTExporterDownloadBridge;
+    if (downloadBridge && typeof downloadBridge.requestBrowserDownloadUrl === "function") {
+      return downloadBridge.requestBrowserDownloadUrl(filename, url, options);
     }
 
-    return new Promise((resolve, reject) => {
-      runtime.sendMessage(
-        {
-          type: "cge-download",
-          filename,
-          url,
-          saveAs: options && typeof options.saveAs === "boolean" ? options.saveAs : true,
-          conflictAction:
-            options && typeof options.conflictAction === "string" ? options.conflictAction : "uniquify",
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message || "下载请求失败。"));
-            return;
-          }
-
-          if (!response || response.ok !== true) {
-            reject(new Error((response && response.error) || "下载请求失败。"));
-            return;
-          }
-
-          resolve(response);
-        },
-      );
-    });
+    return Promise.reject(new Error("浏览器下载桥接模块未加载。"));
   }
 
   function requestBrowserDownload(filename, content, mimeType) {
+    const downloadBridge = window.ChatGPTExporterDownloadBridge;
+    if (downloadBridge && typeof downloadBridge.requestBrowserDownload === "function") {
+      return downloadBridge.requestBrowserDownload(filename, content, mimeType);
+    }
+
     return requestBrowserDownloadUrl(filename, buildDataUrl(content, mimeType));
   }
 
@@ -3978,13 +3330,12 @@
     }
     setStatus(
       primedNativeDownloads > 0
-        ? `已触发 ${primedNativeDownloads} 个附件的浏览器原生下载，正在向上滚动补齐历史…`
-        : "正在向上滚动补齐历史…",
+        ? `已触发 ${primedNativeDownloads} 个附件的浏览器原生下载，正在整理导出数据…`
+        : "正在整理导出数据…",
       "muted",
     );
 
     try {
-      const historyResult = await ensureHistoryLoadedOnce(false);
       latestConversation = collectConversation();
       const conversation = applySelection(latestConversation);
 
@@ -4001,8 +3352,7 @@
         const pdfUrl = buildConversationPdfDataUrl(conversation);
         setStatus("正在请求浏览器保存 PDF…", "muted");
         await requestBrowserDownloadUrl(filename, pdfUrl);
-        const note = historyResult.strategy === "scroll-up" ? "，已尝试补齐历史" : "";
-        setStatus(`导出完成：${filename}${note}`, "success");
+        setStatus(`导出完成：${filename}`, "success");
         return;
       }
 
@@ -4012,7 +3362,6 @@
         const zipResult = await buildConversationZip(conversation);
         setStatus("正在请求浏览器保存 ZIP…", "muted");
         await requestBrowserDownloadBytes(filename, zipResult.bytes, "application/zip");
-        const note = historyResult.strategy === "scroll-up" ? "，已尝试补齐历史" : "";
         const assetNote =
           zipResult.assetCount > 0
             ? `，附件 ${zipResult.downloadedAssetCount}/${zipResult.assetCount} 已打包`
@@ -4022,7 +3371,7 @@
             ? `，${zipResult.browserDownloadQueuedCount} 个附件已改为浏览器原生下载`
             : "";
         const failedNote = zipResult.failedAssetCount > 0 ? `，${zipResult.failedAssetCount} 个附件下载失败` : "";
-        setStatus(`导出完成：${filename}${note}${assetNote}${browserNote}${failedNote}`, "success");
+        setStatus(`导出完成：${filename}${assetNote}${browserNote}${failedNote}`, "success");
         return;
       }
 
@@ -4034,8 +3383,7 @@
       setStatus("正在请求浏览器保存文件…", "muted");
       await requestBrowserDownload(filename, content, mimeType);
 
-      const note = historyResult.strategy === "scroll-up" ? "，已尝试补齐历史" : "";
-      setStatus(`导出完成：${filename}${note}`, "success");
+      setStatus(`导出完成：${filename}`, "success");
     } catch (error) {
       const message = error instanceof Error ? error.message : "导出失败。";
       setStatus(message, "error");
@@ -4051,9 +3399,11 @@
     ensurePanel();
     ensureToolbar();
     ensureTimelinePanel();
+    installFormulaCopyHandler();
     installObservers();
     void prepareTimeline(true);
     requestTimelineRefresh();
+    scheduleFormulaCopyEnhancement();
   }
 
   if (document.readyState === "loading") {

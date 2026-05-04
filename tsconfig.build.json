@@ -6,5 +6,14 @@
     "moduleResolution": "node10",
     "removeComments": false
   },
-  "include": ["src/content/index.ts", "src/background/index.ts"]
+  "include": [
+    "src/content/binary-utils.ts",
+    "src/content/page-bridge.ts",
+    "src/content/formula-copy.ts",
+    "src/content/pdf-export.ts",
+    "src/content/formatters.ts",
+    "src/content/download-bridge.ts",
+    "src/content/index.ts",
+    "src/background/index.ts"
+  ]
 }

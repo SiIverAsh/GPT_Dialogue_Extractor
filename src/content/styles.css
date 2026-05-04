@@ -251,6 +251,69 @@
   max-height: 260px;
   overflow: auto;
   padding: 2px;
+  scrollbar-color: rgba(148, 163, 184, 0.42) rgba(241, 245, 249, 0.7);
+  scrollbar-width: thin;
+}
+
+.cge-message-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.cge-message-list::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.7);
+  border-radius: 999px;
+}
+
+.cge-message-list::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.42);
+  border: 2px solid rgba(248, 250, 252, 0.92);
+  border-radius: 999px;
+}
+
+.cge-message-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+}
+
+.cge-formula-copy-target {
+  cursor: copy;
+  border-radius: 8px;
+  transition:
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.cge-formula-copy-target:hover {
+  background: rgba(219, 234, 254, 0.52);
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.16);
+}
+
+.cge-formula-copy-toast {
+  position: fixed;
+  z-index: 2147483647;
+  transform: translate(-50%, -100%) translateY(-8px);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.2);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.cge-formula-copy-toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, -100%) translateY(-14px);
+}
+
+.cge-formula-copy-toast[data-tone="error"] {
+  background: rgba(185, 28, 28, 0.94);
 }
 
 .cge-timeline-toggle {

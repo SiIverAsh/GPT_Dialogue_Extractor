@@ -12,7 +12,15 @@
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["src/content/index.js"],
+      "js": [
+        "src/content/binary-utils.js",
+        "src/content/page-bridge.js",
+        "src/content/formula-copy.js",
+        "src/content/pdf-export.js",
+        "src/content/formatters.js",
+        "src/content/download-bridge.js",
+        "src/content/index.js"
+      ],
       "css": ["src/content/styles.css"],
       "run_at": "document_idle"
     }
